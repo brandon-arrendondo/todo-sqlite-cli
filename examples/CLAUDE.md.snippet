@@ -1,0 +1,34 @@
+## Task tracking
+
+This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
+`.todo-sqlite-cli` marker at the repo root (or `$TODO_SQLITE_CLI_DB`, or the
+`--db` flag — in that precedence order).
+
+**Before planning or coding, ask the DB — do not read a PLAN.md file:**
+
+- `todo-sqlite-cli next` — the single task to work on right now. Returns
+  the oldest in-progress task, or the highest-priority unblocked pending
+  task, in one query. Prefer this over loading a plan file into context.
+- `todo-sqlite-cli list` — all active (in-progress + pending) tasks, ordered
+  in-progress first, then by priority.
+- `todo-sqlite-cli show <id>` — full details for one task.
+- `todo-sqlite-cli list --json` / `show <id> --json` / `next --json` — same
+  output in machine-readable form.
+
+**When picking up work:**
+
+- `todo-sqlite-cli start <id>` before coding. At most one task may be
+  in-progress at a time; use `--force` only when you deliberately want to
+  suspend the current task.
+- `todo-sqlite-cli done <id>` when the change is committed. Idempotent —
+  safe to call twice.
+
+**When a new task surfaces:**
+
+- `todo-sqlite-cli add "title" --details "..." --tag <area> --priority <1-5>`
+  (priority 1 is highest, 3 is default).
+- `--depends-on <id>` to link a prerequisite. Tasks with unmet dependencies
+  are skipped by `next` and flagged `[blocked]` in `list`.
+
+**Exit codes:** 0 success, 1 user error, 2 system error. Every command
+supports `--json` and `--db PATH`.

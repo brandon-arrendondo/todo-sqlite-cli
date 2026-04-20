@@ -1,0 +1,6 @@
+# todo-sqlite-cli: ignore DB files, but keep the marker so agents can find the DB
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+!.todo-sqlite-cli

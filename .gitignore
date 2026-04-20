@@ -1,0 +1,7 @@
+/target
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.todo-sqlite-cli
+THIRD_PARTY_LICENSES.txt
