@@ -78,13 +78,19 @@ jobs:
       - name: Verify Binary
         run: ${{ matrix.binary }} --version
 
-      - name: Install cargo-about (Linux)
-        if: runner.os == 'Linux'
+      - name: Install cargo-about
         run: cargo install cargo-about --locked
 
-      - name: Generate Third-Party Licenses (Linux)
-        if: runner.os == 'Linux'
+      - name: Generate Third-Party Licenses
+        shell: bash
         run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.txt
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate SBOM (CycloneDX)
+        shell: bash
+        run: cargo cyclonedx --format json --spec-version 1.5
 
       - name: Stage Artifacts (Linux)
         if: runner.os == 'Linux'
@@ -96,6 +102,7 @@ jobs:
           cp README.md "${ARTIFACT_DIR}/"
           cp LICENSE "${ARTIFACT_DIR}/"
           cp THIRD_PARTY_LICENSES.txt "${ARTIFACT_DIR}/"
+          cp todo-sqlite-cli.cdx.json "${ARTIFACT_DIR}/"
           echo "=== Artifacts staged ==="
           ls -lhR "${ARTIFACT_DIR}/"
           echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> $GITHUB_ENV
@@ -110,19 +117,11 @@ jobs:
           Copy-Item "${{ matrix.binary }}" -Destination $ARTIFACT_DIR
           Copy-Item "README.md" -Destination $ARTIFACT_DIR
           Copy-Item "LICENSE" -Destination $ARTIFACT_DIR
+          Copy-Item "THIRD_PARTY_LICENSES.txt" -Destination $ARTIFACT_DIR
+          Copy-Item "todo-sqlite-cli.cdx.json" -Destination $ARTIFACT_DIR
           Write-Host "=== Artifacts staged ==="
           Get-ChildItem $ARTIFACT_DIR
           echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> $env:GITHUB_ENV
-
-      - name: Copy Third-Party Licenses (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # cargo-about only runs on the Linux job; pull the Linux artifact's
-          # license file via a minimal re-generation on Windows.
-          cargo install cargo-about --locked
-          cargo about generate about.hbs -o THIRD_PARTY_LICENSES.txt
-          Copy-Item "THIRD_PARTY_LICENSES.txt" -Destination "${{ env.ARTIFACT_DIR }}"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -135,7 +134,11 @@ jobs:
     name: Package Release
     needs: build
     runs-on: ubuntu-22.04
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >-
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      && github.event_name != 'pull_request'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -207,6 +210,8 @@ jobs:
           cp LICENSE "${PKG_DIR}/usr/share/doc/todo-sqlite-cli/copyright"
           cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/THIRD_PARTY_LICENSES.txt" \
              "${PKG_DIR}/usr/share/doc/todo-sqlite-cli/"
+          cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/todo-sqlite-cli.cdx.json" \
+             "${PKG_DIR}/usr/share/doc/todo-sqlite-cli/"
 
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
           mv "${PKG_DIR}.deb" "artifacts/"
@@ -223,6 +228,7 @@ jobs:
           cp README.md "${TARDIR}/doc/"
           cp LICENSE "${TARDIR}/doc/"
           cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/THIRD_PARTY_LICENSES.txt" "${TARDIR}/doc/"
+          cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/todo-sqlite-cli.cdx.json" "${TARDIR}/doc/"
           tar -czf "rpmbuild/SOURCES/todo-sqlite-cli-${VERSION}.tar.gz" "${TARDIR}"
           rm -rf "${TARDIR}"
 
@@ -250,11 +256,13 @@ jobs:
           install -m 644 doc/README.md %{buildroot}%{_docdir}/%{name}/README.md
           install -m 644 doc/LICENSE %{buildroot}%{_docdir}/%{name}/LICENSE
           install -m 644 doc/THIRD_PARTY_LICENSES.txt %{buildroot}%{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
+          install -m 644 doc/todo-sqlite-cli.cdx.json %{buildroot}%{_docdir}/%{name}/todo-sqlite-cli.cdx.json
 
           %files
           %{_bindir}/todo-sqlite-cli
           %doc %{_docdir}/%{name}/README.md
           %doc %{_docdir}/%{name}/THIRD_PARTY_LICENSES.txt
+          %doc %{_docdir}/%{name}/todo-sqlite-cli.cdx.json
           %license %{_docdir}/%{name}/LICENSE
           SPEC_EOF
 
@@ -281,6 +289,8 @@ jobs:
           cp README.md "${APPDIR}/usr/share/doc/todo-sqlite-cli/"
           cp LICENSE "${APPDIR}/usr/share/doc/todo-sqlite-cli/"
           cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/THIRD_PARTY_LICENSES.txt" \
+             "${APPDIR}/usr/share/doc/todo-sqlite-cli/"
+          cp "artifacts/todo-sqlite-cli-linux-x64-${VERSION}/todo-sqlite-cli.cdx.json" \
              "${APPDIR}/usr/share/doc/todo-sqlite-cli/"
 
           cat > "${APPDIR}/todo-sqlite-cli.desktop" << EOF
@@ -329,3 +339,15 @@ jobs:
             artifacts/*.rpm
             artifacts/*.AppImage
           retention-days: 90
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/*.deb
+            artifacts/*.rpm
+            artifacts/*.AppImage
