@@ -64,6 +64,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
         } => commands::list::run(db_path, json, &status, &tags, limit),
         Command::Next => commands::next::run(db_path, json),
         Command::Start { id, force } => commands::start::run(db_path, json, id, force),
+        Command::Stop { id } => commands::stop::run(db_path, json, id),
+        Command::Revert { id } => commands::revert::run(db_path, json, id),
         Command::Done { id } => commands::done::run(db_path, json, id),
         Command::Show { id } => commands::show::run(db_path, json, id),
         Command::Edit {

@@ -122,6 +122,86 @@ fn edit_dependency_cycle_rejected() {
 }
 
 #[test]
+fn stop_returns_in_progress_to_pending_and_preserves_started_at() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd().args(["start", &a.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let started = v["started_at"].as_str().unwrap().to_string();
+
+    sb.cmd().args(["stop", &a.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "pending");
+    assert_eq!(v["started_at"].as_str().unwrap(), started);
+}
+
+#[test]
+fn stop_then_start_is_allowed_for_other_tasks() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    let b = sb.add("b");
+    sb.cmd().args(["start", &a.to_string()]).assert().success();
+    sb.cmd().args(["stop", &a.to_string()]).assert().success();
+    sb.cmd().args(["start", &b.to_string()]).assert().success();
+}
+
+#[test]
+fn stop_refuses_done_task() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd().args(["done", &a.to_string()]).assert().success();
+    sb.cmd()
+        .args(["stop", &a.to_string()])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
+fn revert_clears_started_at() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd().args(["start", &a.to_string()]).assert().success();
+    sb.cmd()
+        .args(["revert", &a.to_string()])
+        .assert()
+        .success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "pending");
+    assert!(v["started_at"].is_null());
+}
+
+#[test]
+fn revert_refuses_done_task() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd().args(["done", &a.to_string()]).assert().success();
+    sb.cmd()
+        .args(["revert", &a.to_string()])
+        .assert()
+        .failure()
+        .code(1);
+}
+
+#[test]
 fn rm_cascades_deps_and_tags() {
     let sb = Sandbox::new();
     let a = sb.add_with(&["a", "--tag", "t1"]);

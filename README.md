@@ -81,6 +81,8 @@ The DB should not be checked into git; the marker file can be.
 | `list`                    | List active tasks. Flags: `--status pending\|in-progress\|done\|active\|all`, `--tag`, `--limit` |
 | `next`                    | Print the next task (oldest in-progress beats highest-priority unblocked pending) |
 | `start ID`                | Move to in-progress. `--force` allows >1 in-progress and ignores unmet deps |
+| `stop ID`                 | Move in-progress task back to pending. Preserves `started_at`. |
+| `revert ID`               | Move task back to pending and clear `started_at`.              |
 | `done ID`                 | Mark done. Idempotent.                                         |
 | `show ID`                 | Full task dump.                                                |
 | `edit ID`                 | `--title`, `--details`, `--clear-details`, `--priority`, `--add-tag`/`--rm-tag`, `--add-dep`/`--rm-dep` |

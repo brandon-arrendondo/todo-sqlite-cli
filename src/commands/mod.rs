@@ -6,6 +6,8 @@ pub mod export_todo;
 pub mod init;
 pub mod list;
 pub mod next;
+pub mod revert;
 pub mod rm;
 pub mod show;
 pub mod start;
+pub mod stop;

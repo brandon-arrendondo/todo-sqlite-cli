@@ -68,6 +68,12 @@ pub enum Command {
         force: bool,
     },
 
+    /// Move an in-progress task back to pending. Preserves started_at.
+    Stop { id: i64 },
+
+    /// Move a task back to pending and clear started_at.
+    Revert { id: i64 },
+
     /// Mark a task done. Idempotent.
     Done { id: i64 },
 
