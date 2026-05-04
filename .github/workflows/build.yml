@@ -82,14 +82,12 @@ jobs:
         run: cargo install cargo-about
 
       - name: Generate Third-Party Licenses
-        shell: bash
         run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.txt
 
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx
 
       - name: Generate SBOM (CycloneDX)
-        shell: bash
         run: cargo cyclonedx --format json --spec-version 1.5
 
       - name: Stage Artifacts (Linux)
