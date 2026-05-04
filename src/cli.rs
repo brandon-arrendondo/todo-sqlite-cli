@@ -55,6 +55,9 @@ pub enum Command {
         tags: Vec<String>,
         #[arg(long)]
         limit: Option<i64>,
+        /// table | json | markdown
+        #[arg(long, default_value = "table")]
+        format: String,
     },
 
     /// Print the single task to work on next (in-progress beats pending).

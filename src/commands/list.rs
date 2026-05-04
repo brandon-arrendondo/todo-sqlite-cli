@@ -13,6 +13,7 @@ pub fn run(
     status: &str,
     tags: &[String],
     limit: Option<i64>,
+    fmt: &str,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -101,7 +102,16 @@ pub fn run(
     if json {
         format::print_tasks_json(&tasks);
     } else {
-        format::print_tasks_table(&tasks);
+        match fmt {
+            "table" => format::print_tasks_table(&tasks),
+            "json" => format::print_tasks_json(&tasks),
+            "markdown" => print!("{}", format::markdown_todo(&tasks)),
+            other => {
+                return Err(user(format!(
+                    "invalid --format '{other}' (expected table|json|markdown)"
+                )))
+            }
+        }
     }
     Ok(())
 }
