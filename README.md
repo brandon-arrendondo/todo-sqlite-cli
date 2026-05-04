@@ -78,7 +78,7 @@ The DB should not be checked into git; the marker file can be.
 |---------------------------|----------------------------------------------------------------|
 | `init`                    | Create DB; write marker in cwd unless `--db` given             |
 | `add TITLE`               | Add a task. Flags: `--details`, `--tag` (repeatable), `--priority 1..5`, `--depends-on ID` (repeatable), `--start` |
-| `list`                    | List active tasks. Flags: `--status pending\|in-progress\|done\|active\|all`, `--tag`, `--limit` |
+| `list`                    | List active tasks. Flags: `--status pending\|in-progress\|done\|active\|all`, `--tag`, `--limit`, `--format table\|json\|markdown` |
 | `next`                    | Print the next task (oldest in-progress beats highest-priority unblocked pending) |
 | `start ID`                | Move to in-progress. `--force` allows >1 in-progress and ignores unmet deps |
 | `stop ID`                 | Move in-progress task back to pending. Preserves `started_at`. |
