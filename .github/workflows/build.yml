@@ -79,13 +79,26 @@ jobs:
         run: ${{ matrix.binary }} --version
 
       - name: Install cargo-about
-        run: cargo install --force cargo-about
+        shell: bash
+        run: |
+          cargo install --force cargo-about
+          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "=== cargo-about binary ==="
+          ls -la "$CARGO_BIN/cargo-about"* 2>/dev/null || echo "NOT FOUND in $CARGO_BIN"
+          echo "=== PATH ==="
+          echo "$PATH"
+          echo "$CARGO_BIN" >> "$GITHUB_PATH"
 
       - name: Generate Third-Party Licenses
+        shell: bash
         run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.txt
 
       - name: Install cargo-cyclonedx
-        run: cargo install --force cargo-cyclonedx
+        shell: bash
+        run: |
+          cargo install --force cargo-cyclonedx
+          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$CARGO_BIN" >> "$GITHUB_PATH"
 
       - name: Generate SBOM (CycloneDX)
         run: cargo cyclonedx --format json --spec-version 1.5
