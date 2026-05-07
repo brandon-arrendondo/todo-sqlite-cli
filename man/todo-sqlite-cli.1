@@ -1,0 +1,277 @@
+.TH TODO-SQLITE-CLI 1 "2026-05-07" "todo-sqlite-cli 1.3.0" "User Commands"
+.SH NAME
+todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
+.SH SYNOPSIS
+.B todo-sqlite-cli
+[\fB\-\-db\fR \fIPATH\fR]
+[\fB\-\-json\fR]
+.I COMMAND
+[\fIARGS\fR...]
+.SH DESCRIPTION
+.B todo-sqlite-cli
+is a scriptable per-project TODO list backed by SQLite.
+It is designed for coding agents (Claude Code and friends), but works equally
+well as a plain CLI in shell scripts, CI jobs, and human workflows.
+The tool stores tasks in a single SQLite file so state is durable, queryable,
+and shareable across multiple repositories.
+.PP
+Every command supports
+.B \-\-json
+for machine-readable output and
+.B \-\-db
+.I PATH
+to override database resolution.
+Output is compact-by-default to keep token usage low when an AI agent reads
+it back; pass
+.B \-\-verbose
+or
+.B \-\-pretty
+on commands that support it for human-readable dumps.
+.SH COMMANDS
+.TP
+.B init
+Initialize a new database. Writes a
+.I .todo-sqlite-cli
+marker file in the current directory unless
+.B \-\-db
+is given.
+.TP
+.B add \fITITLE\fR
+Add a new task. Prints the new ID. Flags:
+.B \-\-details \fITEXT\fR,
+.B \-\-tag \fITAG\fR
+(repeatable),
+.B \-\-priority \fIP\fR
+(accepts
+.IR 1 \-\- 5 ,
+.IR P1 \-\- P5 ,
+or
+.IR p1 \-\- p5 ;
+default
+.IR 3 ),
+.B \-\-depends-on \fIID\fR
+(repeatable),
+.B \-\-start
+(immediately move to in-progress after adding).
+.TP
+.B list
+List tasks. Default shows active work (in-progress, partial, and pending),
+ordered in-progress first, then partial, then pending; within each, by
+priority. Flags:
+.B \-\-status pending|partial|in-progress|done|active|all,
+.B \-\-tag \fITAG\fR,
+.B \-\-limit \fIN\fR,
+.B \-\-format table|json|markdown,
+.B \-\-since \fIDATE\fR
+(YYYY-MM-DD or RFC3339; filters by
+.IR created_at ),
+.B \-\-ids-only
+(print only IDs, one per line in text mode or as a JSON array under
+.BR \-\-json ),
+.B \-\-verbose
+(use heading-per-field markdown).
+.TP
+.B next
+Print the single task to work on next. Returns the oldest in-progress task,
+then the oldest unblocked partial task, then the highest-priority unblocked
+pending task.
+Skips tasks with unmet dependencies.
+.TP
+.B start \fIID\fR
+Move a task to in-progress. If another task is already in-progress, it is
+auto-paused to
+.B partial
+(its
+.I started_at
+is preserved).
+Pass
+.B \-\-force
+to keep multiple tasks in-progress and to ignore unmet dependencies.
+.TP
+.B stop \fIID\fR
+Move an in-progress task to
+.BR partial .
+Preserves
+.IR started_at .
+.TP
+.B revert \fIID\fR
+Move a task back to pending and clear
+.IR started_at .
+Useful to discard a start that turned out to be wrong.
+.TP
+.B done \fIID\fR
+Mark a task done. Idempotent \(em calling it on an already-done task does
+not rewrite
+.I completed_at
+and exits 0.
+.TP
+.B show \fIID\fR
+Print task details.
+By default, fields holding their default values
+.RB ( "Status: pending" ,
+.BR "Priority: P3" )
+are omitted to keep output terse.
+Pass
+.B \-\-verbose
+to print every field including
+.IR created_at .
+.TP
+.B edit \fIID\fR
+Edit an existing task. Flags:
+.B \-\-title \fITEXT\fR,
+.B \-\-details \fITEXT\fR,
+.B \-\-clear-details,
+.B \-\-priority \fIP\fR,
+.B \-\-add-tag \fITAG\fR
+(repeatable),
+.B \-\-rm-tag \fITAG\fR
+(repeatable),
+.B \-\-add-dep \fIID\fR
+(repeatable; rejects cycles),
+.B \-\-rm-dep \fIID\fR
+(repeatable).
+.TP
+.B rm \fIID\fR
+Delete a task. Cascades to associated tags and dependency edges.
+.TP
+.B export-completed
+Export completed tasks as JSON, grouped by completion date (descending).
+Compact by default.
+Flags:
+.B \-\-since \fIDATE\fR
+(inclusive lower bound on
+.IR completed_at ),
+.B \-\-until \fIDATE\fR
+(exclusive upper bound),
+.B \-\-pretty
+(indented JSON for human review).
+.TP
+.B export-todo
+Export active + partial + pending tasks. Flags:
+.B \-\-format json|markdown,
+.B \-\-verbose
+(heading-per-field markdown; default is terse).
+.SH STATUSES
+.TP
+.B pending
+Default state for new tasks.
+.TP
+.B in-progress
+Currently being worked on. Set by
+.BR start .
+.TP
+.B partial
+Started, then paused. Set automatically when
+.B start
+displaces another in-progress task, or explicitly by
+.BR stop .
+.B started_at
+is preserved so the task can be resumed via
+.BR start .
+.TP
+.B done
+Completed. Set by
+.BR done .
+.SH DATABASE RESOLUTION
+The database path is resolved in this order, with the first match winning:
+.IP 1. 4
+The
+.B \-\-db
+.I PATH
+flag.
+.IP 2. 4
+The
+.B TODO_SQLITE_CLI_DB
+environment variable.
+.IP 3. 4
+A walk up from the current directory looking for a
+.I .todo-sqlite-cli
+marker file (first line is the DB path; relative paths resolve against the
+marker's directory, exactly like git finds
+.IR .git ).
+.IP 4. 4
+Otherwise the command exits with status 1 and a hint pointing at
+.BR "todo-sqlite-cli init" .
+.PP
+The DB file should not be checked into git; the marker file can be.
+Multiple repositories can point at the same DB file by writing the same
+absolute path in each repo's
+.I .todo-sqlite-cli
+marker.
+.SH FILES
+.TP
+.I .todo-sqlite-cli
+Marker file written by
+.BR "todo-sqlite-cli init" .
+First line is the path to the database (absolute, or relative to the
+marker's directory).
+.TP
+.I todo-sqlite-cli.db
+Default database filename created by
+.B init
+when no
+.B \-\-db
+flag is given.
+.SH ENVIRONMENT
+.TP
+.B TODO_SQLITE_CLI_DB
+If set, used as the database path when no
+.B \-\-db
+flag is supplied. Overridden by
+.B \-\-db
+but takes precedence over marker-file resolution.
+.SH EXAMPLES
+.PP
+Initialize a database in the current repo and add the first task:
+.RS
+.nf
+todo-sqlite-cli init
+todo-sqlite-cli add "fix login redirect" --tag auth --priority P2
+.fi
+.RE
+.PP
+Ask for the next task to work on:
+.RS
+.nf
+todo-sqlite-cli next
+.fi
+.RE
+.PP
+Switch to a different task; the previous in-progress task is auto-paused:
+.RS
+.nf
+todo-sqlite-cli start 5
+.fi
+.RE
+.PP
+Cheap re-poll for changes between agent turns:
+.RS
+.nf
+todo-sqlite-cli list --ids-only
+todo-sqlite-cli list --since 2026-05-07 --json
+.fi
+.RE
+.PP
+Export the completed log for a date range:
+.RS
+.nf
+todo-sqlite-cli export-completed --since 2026-05-01 --until 2026-06-01
+.fi
+.RE
+.SH EXIT CODES
+.TP
+.B 0
+Success.
+.TP
+.B 1
+User error: bad input, missing database, violated invariant, task not found.
+.TP
+.B 2
+System error: unwritable path, corrupt database, failed migration.
+.SH AUTHORS
+Brandon Arrendondo <brandon@arrendondo.dev>
+.SH BUGS
+Report bugs at: https://github.com/brandonarrendondo/todo-sqlite-cli/issues
+.SH SEE ALSO
+.BR sqlite3 (1),
+.BR git (1)
