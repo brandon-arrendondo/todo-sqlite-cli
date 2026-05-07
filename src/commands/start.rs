@@ -31,18 +31,6 @@ pub fn run(db_path: &Path, json: bool, id: i64, force: bool) -> CliResult<()> {
         return Err(user(format!("task {id} is already done")));
     } else {
         if !force {
-            let count: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE status = 'in-progress'",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(|e| system(format!("query failed: {e}")))?;
-            if count > 0 {
-                return Err(user(
-                    "another task is in-progress; finish it or pass --force",
-                ));
-            }
             let blocked: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM deps d \
@@ -57,6 +45,16 @@ pub fn run(db_path: &Path, json: bool, id: i64, force: bool) -> CliResult<()> {
                     "task {id} has unmet dependencies; pass --force to override"
                 )));
             }
+        }
+        // Auto-move any other in-progress task to 'partial' (preserving started_at)
+        // unless --force was passed (which keeps multiple in-progress).
+        if !force {
+            tx.execute(
+                "UPDATE tasks SET status = 'partial' \
+                 WHERE status = 'in-progress' AND id <> ?1",
+                params![id],
+            )
+            .map_err(|e| system(format!("auto-move failed: {e}")))?;
         }
         tx.execute(
             "UPDATE tasks SET status = 'in-progress', started_at = COALESCE(started_at, ?1) \

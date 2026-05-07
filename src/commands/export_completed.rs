@@ -12,6 +12,7 @@ pub fn run(
     _json_flag: bool,
     since: Option<&str>,
     until: Option<&str>,
+    pretty: bool,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -70,6 +71,6 @@ pub fn run(
         t.depends_on = db::load_deps(&conn, t.id)?;
     }
 
-    format::print_completed_json(&tasks);
+    format::print_completed_json(&tasks, pretty);
     Ok(())
 }

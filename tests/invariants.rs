@@ -4,20 +4,36 @@ use common::Sandbox;
 use predicates::prelude::*;
 
 #[test]
-fn only_one_in_progress_at_a_time() {
+fn start_auto_moves_prior_in_progress_to_partial() {
     let sb = Sandbox::new();
     let a = sb.add("a");
     let b = sb.add("b");
     sb.cmd().args(["start", &a.to_string()]).assert().success();
-    sb.cmd()
-        .args(["start", &b.to_string()])
-        .assert()
-        .failure()
-        .code(1);
+    sb.cmd().args(["start", &b.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "partial");
+    assert!(
+        v["started_at"].as_str().is_some(),
+        "started_at must be preserved on auto-move to partial"
+    );
+
+    let out = sb
+        .cmd()
+        .args(["show", &b.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "in-progress");
 }
 
 #[test]
-fn force_overrides_single_in_progress() {
+fn force_keeps_multiple_in_progress() {
     let sb = Sandbox::new();
     let a = sb.add("a");
     let b = sb.add("b");
@@ -26,6 +42,15 @@ fn force_overrides_single_in_progress() {
         .args(["start", &b.to_string(), "--force"])
         .assert()
         .success();
+
+    // With --force, both stay in-progress (no auto-move).
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "in-progress");
 }
 
 #[test]
@@ -101,12 +126,18 @@ fn next_prefers_in_progress_over_higher_priority_pending() {
 }
 
 #[test]
-fn add_with_start_fails_if_another_task_in_progress() {
+fn add_with_start_auto_moves_prior_in_progress_to_partial() {
     let sb = Sandbox::new();
-    let _a = sb.add_with(&["a", "--start"]);
-    let mut cmd = sb.cmd();
-    cmd.args(["add", "b", "--start"]);
-    cmd.assert().failure().code(1);
+    let a = sb.add_with(&["a", "--start"]);
+    let _b = sb.add_with(&["b", "--start"]);
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "partial");
 }
 
 #[test]
@@ -122,7 +153,7 @@ fn edit_dependency_cycle_rejected() {
 }
 
 #[test]
-fn stop_returns_in_progress_to_pending_and_preserves_started_at() {
+fn stop_moves_in_progress_to_partial_and_preserves_started_at() {
     let sb = Sandbox::new();
     let a = sb.add("a");
     sb.cmd().args(["start", &a.to_string()]).assert().success();
@@ -143,8 +174,47 @@ fn stop_returns_in_progress_to_pending_and_preserves_started_at() {
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["status"].as_str().unwrap(), "pending");
+    assert_eq!(v["status"].as_str().unwrap(), "partial");
     assert_eq!(v["started_at"].as_str().unwrap(), started);
+}
+
+#[test]
+fn next_prefers_partial_over_pending() {
+    let sb = Sandbox::new();
+    let resumable = sb.add_with(&["resumable", "--priority", "5"]);
+    sb.cmd()
+        .args(["start", &resumable.to_string()])
+        .assert()
+        .success();
+    sb.cmd()
+        .args(["stop", &resumable.to_string()])
+        .assert()
+        .success();
+    let _urgent_pending = sb.add_with(&["urgent", "--priority", "1"]);
+
+    let out = sb.cmd().args(["next", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["id"].as_i64().unwrap(), resumable);
+    assert_eq!(v["status"].as_str().unwrap(), "partial");
+}
+
+#[test]
+fn revert_clears_started_at_for_partial() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd().args(["start", &a.to_string()]).assert().success();
+    sb.cmd().args(["stop", &a.to_string()]).assert().success();
+
+    sb.cmd().args(["revert", &a.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "pending");
+    assert!(v["started_at"].is_null());
 }
 
 #[test]
@@ -174,10 +244,7 @@ fn revert_clears_started_at() {
     let sb = Sandbox::new();
     let a = sb.add("a");
     sb.cmd().args(["start", &a.to_string()]).assert().success();
-    sb.cmd()
-        .args(["revert", &a.to_string()])
-        .assert()
-        .success();
+    sb.cmd().args(["revert", &a.to_string()]).assert().success();
 
     let out = sb
         .cmd()

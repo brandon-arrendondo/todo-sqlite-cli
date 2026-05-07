@@ -2,6 +2,19 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Parse a priority value: accepts `1`..`5`, `P1`..`P5`, or `p1`..`p5`.
+fn parse_priority(s: &str) -> Result<i64, String> {
+    let trimmed = s.trim();
+    let digits = trimmed.strip_prefix(['P', 'p']).unwrap_or(trimmed);
+    let n: i64 = digits
+        .parse()
+        .map_err(|_| format!("invalid priority '{s}' (expected 1-5 or P1-P5)"))?;
+    if !(1..=5).contains(&n) {
+        return Err(format!("priority must be between 1 and 5 (got {n})"));
+    }
+    Ok(n)
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "todo-sqlite-cli",
@@ -37,7 +50,7 @@ pub enum Command {
         details: Option<String>,
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=5), default_value_t = 3)]
+        #[arg(long, value_parser = parse_priority, default_value = "3")]
         priority: i64,
         #[arg(long = "depends-on", value_name = "ID")]
         depends_on: Vec<i64>,
@@ -46,9 +59,9 @@ pub enum Command {
         start: bool,
     },
 
-    /// List tasks. Default shows active work (in-progress + pending), highest priority first.
+    /// List tasks. Default shows active work (in-progress + partial + pending), highest priority first.
     List {
-        /// pending | in-progress | done | active | all
+        /// pending | partial | in-progress | done | active | all
         #[arg(long, default_value = "active")]
         status: String,
         #[arg(long = "tag", value_name = "TAG")]
@@ -58,6 +71,15 @@ pub enum Command {
         /// table | json | markdown
         #[arg(long, default_value = "table")]
         format: String,
+        /// Only include tasks with created_at >= SINCE (YYYY-MM-DD or RFC3339).
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Print only IDs (one per line; JSON array under --json). Cheapest re-poll.
+        #[arg(long = "ids-only")]
+        ids_only: bool,
+        /// Use verbose markdown when --format markdown (default is terse).
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// Print the single task to work on next (in-progress beats pending).
@@ -81,7 +103,12 @@ pub enum Command {
     Done { id: i64 },
 
     /// Show full details for a task.
-    Show { id: i64 },
+    Show {
+        id: i64,
+        /// Print all fields, including default values (status=pending, priority=P3) and created_at.
+        #[arg(long)]
+        verbose: bool,
+    },
 
     /// Edit an existing task.
     Edit {
@@ -92,7 +119,7 @@ pub enum Command {
         details: Option<String>,
         #[arg(long)]
         clear_details: bool,
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=5))]
+        #[arg(long, value_parser = parse_priority)]
         priority: Option<i64>,
         #[arg(long = "add-tag")]
         add_tag: Vec<String>,
@@ -115,6 +142,9 @@ pub enum Command {
         /// Exclusive upper bound on completed_at (YYYY-MM-DD or RFC3339).
         #[arg(long)]
         until: Option<String>,
+        /// Pretty-print the JSON output (multi-line, indented). Default is compact.
+        #[arg(long)]
+        pretty: bool,
     },
 
     /// Export active + pending tasks.
@@ -122,5 +152,8 @@ pub enum Command {
         /// json | markdown
         #[arg(long, default_value = "json")]
         format: String,
+        /// Use verbose markdown (heading-per-field). Default is terse.
+        #[arg(long)]
+        verbose: bool,
     },
 }

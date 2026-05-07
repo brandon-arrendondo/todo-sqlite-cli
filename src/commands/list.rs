@@ -7,6 +7,7 @@ use crate::db::{self, Task};
 use crate::error::{system, user, CliResult};
 use crate::format;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db_path: &Path,
     json: bool,
@@ -14,6 +15,9 @@ pub fn run(
     tags: &[String],
     limit: Option<i64>,
     fmt: &str,
+    since: Option<&str>,
+    ids_only: bool,
+    verbose: bool,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -23,12 +27,12 @@ pub fn run(
     }
 
     let status_clause = match status {
-        "active" => "status IN ('in-progress','pending')",
+        "active" => "status IN ('in-progress','partial','pending')",
         "all" => "1=1",
-        "pending" | "in-progress" | "done" => "status = ?S",
+        "pending" | "partial" | "in-progress" | "done" => "status = ?S",
         other => {
             return Err(user(format!(
-                "invalid --status '{other}' (expected pending|in-progress|done|active|all)"
+                "invalid --status '{other}' (expected pending|partial|in-progress|done|active|all)"
             )))
         }
     };
@@ -55,12 +59,20 @@ pub fn run(
         }
     }
 
-    // Order: in-progress first, then pending, then done; within each, priority ASC, created_at ASC.
+    if let Some(s) = since {
+        let norm = db::parse_date_bound(s)?;
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND created_at >= ?{idx}"));
+        params.push(Value::Text(norm));
+    }
+
+    // Order: in-progress, partial, pending, done; within each, priority ASC, created_at ASC.
     sql.push_str(
         " ORDER BY CASE status \
            WHEN 'in-progress' THEN 0 \
-           WHEN 'pending' THEN 1 \
-           WHEN 'done' THEN 2 END, \
+           WHEN 'partial' THEN 1 \
+           WHEN 'pending' THEN 2 \
+           WHEN 'done' THEN 3 END, \
          priority ASC, created_at ASC, id ASC",
     );
     if let Some(n) = limit {
@@ -99,13 +111,18 @@ pub fn run(
         t.blocked = db::is_blocked(&conn, t.id)?;
     }
 
+    if ids_only {
+        format::print_ids(&tasks, json);
+        return Ok(());
+    }
+
     if json {
         format::print_tasks_json(&tasks);
     } else {
         match fmt {
             "table" => format::print_tasks_table(&tasks),
             "json" => format::print_tasks_json(&tasks),
-            "markdown" => print!("{}", format::markdown_todo(&tasks)),
+            "markdown" => print!("{}", format::markdown_todo(&tasks, verbose)),
             other => {
                 return Err(user(format!(
                     "invalid --format '{other}' (expected table|json|markdown)"

@@ -4,7 +4,7 @@ use crate::db;
 use crate::error::{user, CliResult};
 use crate::format;
 
-pub fn run(db_path: &Path, json: bool, id: i64) -> CliResult<()> {
+pub fn run(db_path: &Path, json: bool, id: i64, verbose: bool) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -15,7 +15,7 @@ pub fn run(db_path: &Path, json: bool, id: i64) -> CliResult<()> {
     if json {
         format::print_task_json(&t);
     } else {
-        format::print_task_text(&t);
+        format::print_task_text(&t, verbose);
     }
     Ok(())
 }

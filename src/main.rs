@@ -62,13 +62,26 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             tags,
             limit,
             format,
-        } => commands::list::run(db_path, json, &status, &tags, limit, &format),
+            since,
+            ids_only,
+            verbose,
+        } => commands::list::run(
+            db_path,
+            json,
+            &status,
+            &tags,
+            limit,
+            &format,
+            since.as_deref(),
+            ids_only,
+            verbose,
+        ),
         Command::Next => commands::next::run(db_path, json),
         Command::Start { id, force } => commands::start::run(db_path, json, id, force),
         Command::Stop { id } => commands::stop::run(db_path, json, id),
         Command::Revert { id } => commands::revert::run(db_path, json, id),
         Command::Done { id } => commands::done::run(db_path, json, id),
-        Command::Show { id } => commands::show::run(db_path, json, id),
+        Command::Show { id, verbose } => commands::show::run(db_path, json, id, verbose),
         Command::Edit {
             id,
             title,
@@ -93,9 +106,19 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &rm_dep,
         ),
         Command::Rm { id } => commands::rm::run(db_path, json, id),
-        Command::ExportCompleted { since, until } => {
-            commands::export_completed::run(db_path, json, since.as_deref(), until.as_deref())
+        Command::ExportCompleted {
+            since,
+            until,
+            pretty,
+        } => commands::export_completed::run(
+            db_path,
+            json,
+            since.as_deref(),
+            until.as_deref(),
+            pretty,
+        ),
+        Command::ExportTodo { format, verbose } => {
+            commands::export_todo::run(db_path, json, &format, verbose)
         }
-        Command::ExportTodo { format } => commands::export_todo::run(db_path, json, &format),
     }
 }

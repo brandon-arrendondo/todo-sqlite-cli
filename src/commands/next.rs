@@ -22,7 +22,26 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
         )
         .ok();
 
-    // 2. Highest-priority pending that is not blocked
+    // 2. Highest-priority partial that is not blocked (resume paused work first)
+    let id = match id {
+        Some(v) => Some(v),
+        None => conn
+            .query_row(
+                "SELECT id FROM tasks t \
+                 WHERE status = 'partial' \
+                   AND NOT EXISTS (\
+                     SELECT 1 FROM deps d \
+                     JOIN tasks td ON td.id = d.depends_on_id \
+                     WHERE d.task_id = t.id AND td.status <> 'done'\
+                   ) \
+                 ORDER BY priority ASC, started_at ASC, id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok(),
+    };
+
+    // 3. Highest-priority pending that is not blocked
     let id = match id {
         Some(v) => Some(v),
         None => conn
@@ -47,7 +66,7 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
             if json {
                 format::print_task_json(&t);
             } else {
-                format::print_task_text(&t);
+                format::print_task_text(&t, false);
             }
         }
         None => {

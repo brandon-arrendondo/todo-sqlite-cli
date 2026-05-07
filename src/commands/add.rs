@@ -36,18 +36,12 @@ pub fn run(
 
     let now = db::now_iso();
     let (status, started_at) = if start {
-        let in_progress = tx
-            .query_row(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'in-progress'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| system(format!("query failed: {e}")))?;
-        if in_progress > 0 {
-            return Err(user(
-                "another task is in-progress; finish it or use `start --force`",
-            ));
-        }
+        // Auto-move any in-progress task to 'partial' (preserving started_at).
+        tx.execute(
+            "UPDATE tasks SET status = 'partial' WHERE status = 'in-progress'",
+            [],
+        )
+        .map_err(|e| system(format!("auto-move failed: {e}")))?;
         (Status::InProgress, Some(now.clone()))
     } else {
         (Status::Pending, None)

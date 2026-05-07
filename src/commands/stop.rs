@@ -27,7 +27,7 @@ pub fn run(db_path: &Path, json: bool, id: i64) -> CliResult<()> {
 
     if current == Status::InProgress.as_str() {
         conn.execute(
-            "UPDATE tasks SET status = 'pending' WHERE id = ?1",
+            "UPDATE tasks SET status = 'partial' WHERE id = ?1",
             params![id],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;

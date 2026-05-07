@@ -4,7 +4,7 @@ use crate::db::{self, Task};
 use crate::error::{system, user, CliResult};
 use crate::format;
 
-pub fn run(db_path: &Path, _json_flag: bool, fmt: &str) -> CliResult<()> {
+pub fn run(db_path: &Path, _json_flag: bool, fmt: &str, verbose: bool) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -15,8 +15,11 @@ pub fn run(db_path: &Path, _json_flag: bool, fmt: &str) -> CliResult<()> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
-             FROM tasks WHERE status IN ('in-progress','pending') \
-             ORDER BY CASE status WHEN 'in-progress' THEN 0 ELSE 1 END, \
+             FROM tasks WHERE status IN ('in-progress','partial','pending') \
+             ORDER BY CASE status \
+                       WHEN 'in-progress' THEN 0 \
+                       WHEN 'partial' THEN 1 \
+                       WHEN 'pending' THEN 2 END, \
                       priority ASC, created_at ASC, id ASC",
         )
         .map_err(|e| system(format!("prepare failed: {e}")))?;
@@ -51,7 +54,7 @@ pub fn run(db_path: &Path, _json_flag: bool, fmt: &str) -> CliResult<()> {
     match fmt {
         "json" => format::print_tasks_json(&tasks),
         "markdown" => {
-            print!("{}", format::markdown_todo(&tasks));
+            print!("{}", format::markdown_todo(&tasks, verbose));
         }
         other => {
             return Err(user(format!(

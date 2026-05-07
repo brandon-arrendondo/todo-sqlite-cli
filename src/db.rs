@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{system, user, CliResult};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE tasks (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     title        TEXT NOT NULL,
     details      TEXT,
-    status       TEXT NOT NULL CHECK(status IN ('pending','in-progress','done')),
+    status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done')),
     priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
     created_at   TEXT NOT NULL,
     started_at   TEXT,
@@ -47,6 +47,7 @@ CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
     Pending,
+    Partial,
     InProgress,
     Done,
 }
@@ -55,6 +56,7 @@ impl Status {
     pub fn as_str(&self) -> &'static str {
         match self {
             Status::Pending => "pending",
+            Status::Partial => "partial",
             Status::InProgress => "in-progress",
             Status::Done => "done",
         }
@@ -102,7 +104,105 @@ pub fn open(path: &Path) -> CliResult<Connection> {
         .map_err(|e| system(format!("pragma journal_mode failed: {e}")))?;
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| system(format!("pragma foreign_keys failed: {e}")))?;
+    if is_initialized(&conn) {
+        migrate(&conn)?;
+    }
     Ok(conn)
+}
+
+fn read_schema_version(conn: &Connection) -> CliResult<i64> {
+    let v: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| system(format!("meta read failed: {e}")))?;
+    match v {
+        Some(s) => s
+            .parse::<i64>()
+            .map_err(|e| system(format!("schema_version parse failed: {e}"))),
+        None => Ok(1),
+    }
+}
+
+fn migrate(conn: &Connection) -> CliResult<()> {
+    let current = read_schema_version(conn)?;
+    if current == SCHEMA_VERSION {
+        return Ok(());
+    }
+    if current > SCHEMA_VERSION {
+        return Err(system(format!(
+            "database schema version {current} is newer than this binary supports ({SCHEMA_VERSION}); upgrade todo-sqlite-cli"
+        )));
+    }
+    if current < 1 {
+        return Err(system(format!("invalid schema_version {current}")));
+    }
+    if current == 1 {
+        migrate_v1_to_v2(conn)?;
+    }
+    Ok(())
+}
+
+fn migrate_v1_to_v2(conn: &Connection) -> CliResult<()> {
+    // Recreate tasks with the expanded status CHECK to allow 'partial'.
+    // SQLite cannot alter CHECK constraints in place, so copy via a new table.
+    // The AUTOINCREMENT counter must survive — read it before, set it after.
+    let old_seq: i64 = conn
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'tasks'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| system(format!("read sqlite_sequence failed: {e}")))?
+        .unwrap_or(0);
+
+    conn.pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|e| system(format!("pragma foreign_keys=OFF failed: {e}")))?;
+    conn.execute_batch(
+        r#"
+        BEGIN;
+        CREATE TABLE tasks_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            title        TEXT NOT NULL,
+            details      TEXT,
+            status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done')),
+            priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+            created_at   TEXT NOT NULL,
+            started_at   TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO tasks_new(id, title, details, status, priority, created_at, started_at, completed_at)
+            SELECT id, title, details, status, priority, created_at, started_at, completed_at FROM tasks;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_new RENAME TO tasks;
+        DROP INDEX IF EXISTS idx_tasks_status_priority;
+        CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+        UPDATE meta SET value = '2' WHERE key = 'schema_version';
+        COMMIT;
+        "#,
+    )
+    .map_err(|e| system(format!("v1->v2 migration failed: {e}")))?;
+
+    // Restore the AUTOINCREMENT counter. sqlite_sequence has no UNIQUE on
+    // `name`, so we must clear any rows the table-swap dance left behind
+    // before writing the saved value.
+    conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tasks'", [])
+        .map_err(|e| system(format!("clear sqlite_sequence failed: {e}")))?;
+    if old_seq > 0 {
+        conn.execute(
+            "INSERT INTO sqlite_sequence(name, seq) VALUES('tasks', ?1)",
+            params![old_seq],
+        )
+        .map_err(|e| system(format!("restore sqlite_sequence failed: {e}")))?;
+    }
+
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|e| system(format!("pragma foreign_keys=ON failed: {e}")))?;
+    Ok(())
 }
 
 pub fn create_schema(conn: &Connection) -> CliResult<()> {
