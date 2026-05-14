@@ -2,9 +2,22 @@
 name = "todo-sqlite-cli"
 version = "1.3.0"
 edition = "2021"
+rust-version = "1.75"
 description = "Per-project TODO list CLI backed by SQLite, designed for coding agents"
 license = "MIT"
+authors = ["Brandon Arrendondo <brandon@arrendondo.dev>"]
 repository = "https://github.com/brandonarrendondo/todo-sqlite-cli"
+homepage = "https://github.com/brandonarrendondo/todo-sqlite-cli"
+readme = "README.md"
+keywords = ["todo", "sqlite", "cli", "agent", "task"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "target/",
+    "examples/",
+    ".github/",
+    "about.hbs",
+    "about.toml",
+]
 
 [[bin]]
 name = "todo-sqlite-cli"
