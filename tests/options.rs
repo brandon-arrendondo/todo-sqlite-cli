@@ -142,6 +142,76 @@ fn export_todo_verbose_markdown_keeps_dependencies_none_line() {
 }
 
 #[test]
+fn edit_append_details_seeds_when_empty() {
+    let sb = Sandbox::new();
+    let id = sb.add("task");
+    sb.cmd()
+        .args([
+            "edit",
+            &id.to_string(),
+            "--append-details",
+            "first note",
+        ])
+        .assert()
+        .success();
+    let out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["details"].as_str().unwrap(), "first note");
+}
+
+#[test]
+fn edit_append_details_concatenates_with_newline() {
+    let sb = Sandbox::new();
+    let id = sb.add_with(&["task", "--details", "base"]);
+    sb.cmd()
+        .args(["edit", &id.to_string(), "--append-details", "more"])
+        .assert()
+        .success();
+    sb.cmd()
+        .args(["edit", &id.to_string(), "--append-details", "and more"])
+        .assert()
+        .success();
+    let out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["details"].as_str().unwrap(), "base\nmore\nand more");
+}
+
+#[test]
+fn edit_append_details_rejected_with_replace_or_clear() {
+    let sb = Sandbox::new();
+    let id = sb.add("task");
+    sb.cmd()
+        .args([
+            "edit",
+            &id.to_string(),
+            "--details",
+            "x",
+            "--append-details",
+            "y",
+        ])
+        .assert()
+        .failure();
+    sb.cmd()
+        .args([
+            "edit",
+            &id.to_string(),
+            "--clear-details",
+            "--append-details",
+            "y",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn show_default_suppresses_default_status_and_priority() {
     let sb = Sandbox::new();
     let a = sb.add("a");

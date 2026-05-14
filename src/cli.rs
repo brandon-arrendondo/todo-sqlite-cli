@@ -161,6 +161,9 @@ pub enum Command {
         /// New details body (replaces any existing details).
         #[arg(long)]
         details: Option<String>,
+        /// Append text to the existing details, separated by a newline. Useful for incremental progress notes.
+        #[arg(long, value_name = "TEXT")]
+        append_details: Option<String>,
         /// Clear the details field.
         #[arg(long)]
         clear_details: bool,

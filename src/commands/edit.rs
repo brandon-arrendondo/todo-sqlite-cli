@@ -12,6 +12,7 @@ pub fn run(
     id: i64,
     title: Option<&str>,
     details: Option<&str>,
+    append_details: Option<&str>,
     clear_details: bool,
     priority: Option<i64>,
     add_tag: &[String],
@@ -19,8 +20,12 @@ pub fn run(
     add_dep: &[i64],
     rm_dep: &[i64],
 ) -> CliResult<()> {
-    if details.is_some() && clear_details {
-        return Err(user("--details and --clear-details are mutually exclusive"));
+    let details_mutex =
+        details.is_some() as u8 + append_details.is_some() as u8 + clear_details as u8;
+    if details_mutex > 1 {
+        return Err(user(
+            "--details, --append-details, and --clear-details are mutually exclusive",
+        ));
     }
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -45,6 +50,27 @@ pub fn run(
         tx.execute(
             "UPDATE tasks SET details = ?1 WHERE id = ?2",
             params![d, id],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    if let Some(extra) = append_details {
+        if extra.is_empty() {
+            return Err(user("--append-details text must not be empty"));
+        }
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT details FROM tasks WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| system(format!("read details failed: {e}")))?;
+        let new = match current.as_deref() {
+            None | Some("") => extra.to_string(),
+            Some(existing) => format!("{existing}\n{extra}"),
+        };
+        tx.execute(
+            "UPDATE tasks SET details = ?1 WHERE id = ?2",
+            params![new, id],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
