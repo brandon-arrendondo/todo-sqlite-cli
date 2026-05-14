@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-05-07" "todo-sqlite-cli 1.3.0" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-05-14" "todo-sqlite-cli 1.4.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -119,7 +119,14 @@ to print every field including
 .B edit \fIID\fR
 Edit an existing task. Flags:
 .B \-\-title \fITEXT\fR,
-.B \-\-details \fITEXT\fR,
+.B \-\-details \fITEXT\fR
+(replace),
+.B \-\-append-details \fITEXT\fR
+(append to existing details with a newline separator; mutually exclusive
+with
+.BR \-\-details
+and
+.BR \-\-clear-details ),
 .B \-\-clear-details,
 .B \-\-priority \fIP\fR,
 .B \-\-add-tag \fITAG\fR
