@@ -9,9 +9,13 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli next` — the single task to work on right now. Returns
   the oldest in-progress task, then the oldest partial (paused) task, then
   the highest-priority unblocked pending task. Prefer this over `list` —
-  it returns one task in one query.
+  it returns one task in one query. When no work remains, `next` prints
+  nothing (or `null` under `--json`) and exits 0 — use that as a clean
+  termination signal.
 - `todo-sqlite-cli list` — active tasks (in-progress + partial + pending),
   ordered by status then priority. Tabular output is already terse.
+- `todo-sqlite-cli list --status partial` (or `pending` / `done` / `all`)
+  — filter to one status when scanning a subset.
 - `todo-sqlite-cli show <id>` — details for one task. Default output omits
   default-valued fields (`pending`, `P3`); pass `--verbose` for everything.
 
@@ -43,8 +47,26 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 
 - `todo-sqlite-cli add "title" --details "..." --tag <area> --priority <P>`
   where `<P>` is `1`-`5` or `P1`-`P5` (priority 1 is highest, 3 is default).
-- `--depends-on <id>` to link a prerequisite. Tasks with unmet dependencies
-  are skipped by `next` and flagged `[blocked]` in `list`.
+- `--depends-on <id>` on `add` to link a prerequisite at creation time.
+  Tasks with unmet dependencies are skipped by `next` and flagged
+  `[blocked]` in `list`. Prefer wiring deps at `add` time over editing
+  later.
+
+**Editing or annotating a task:**
+
+- `todo-sqlite-cli edit <id> --append-details "note"` — appends a progress
+  note to existing details with a newline separator. Use this for
+  incremental status notes mid-task instead of `--details` (which
+  replaces) so prior context isn't lost.
+- `todo-sqlite-cli edit <id> --details "new body"` replaces details
+  wholesale; `--clear-details` empties them. These three flags are
+  mutually exclusive.
+- `todo-sqlite-cli edit <id> --add-tag <t>` / `--rm-tag <t>` — manage tags
+  (repeatable).
+- `todo-sqlite-cli edit <id> --add-dep <other-id>` / `--rm-dep <id>` —
+  manage dependency edges (repeatable; cycles are rejected).
+- `todo-sqlite-cli edit <id> --title "..."` / `--priority P2` — rename or
+  reprioritize.
 
 **Statuses:** `pending` → `in-progress` → `done`. `partial` is the paused
 state for a task that was started and then displaced (or stopped) — use
