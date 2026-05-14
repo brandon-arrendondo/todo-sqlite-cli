@@ -55,16 +55,11 @@ agents: edits drop or duplicate entries, growing plan files waste context
 after `/clear`, and a project may span multiple repos. SQLite with a thin
 CLI fixes all three.
 
-## Prior art
+## Alternatives
 
-- [todolist-mcp](https://github.com/wdm0006/todolist-mcp) — closest analog;
-  exposes a SQLite TODO list to agents via MCP. `todo-sqlite-cli` is a
-  plain CLI instead, so it works in any agent, shell, or CI job without
-  MCP wiring.
-- [Claude Code Tasks](https://code.claude.com/docs/en/agent-sdk/todo-tracking)
-  — Anthropic's built-in `~/.claude/tasks`. This tool keeps state
-  **project-adjacent**, **user-chosen**, and **queryable outside Claude** —
-  the same DB can back scripts, CI jobs, and other agents.
+See [ALTERNATIVES.md](ALTERNATIVES.md) for the full landscape (Rust crates,
+MCP servers, Claude Code's built-in tasks, Taskwarrior, dstask, todo.txt-cli)
+and when *not* to use this tool.
 
 ## Development
 
