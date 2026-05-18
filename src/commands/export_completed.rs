@@ -13,6 +13,7 @@ pub fn run(
     since: Option<&str>,
     until: Option<&str>,
     pretty: bool,
+    fmt: &str,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -71,6 +72,14 @@ pub fn run(
         t.depends_on = db::load_deps(&conn, t.id)?;
     }
 
-    format::print_completed_json(&tasks, pretty);
+    match fmt {
+        "json" => format::print_completed_json(&tasks, pretty),
+        "ndjson" => format::print_completed_ndjson(&tasks),
+        other => {
+            return Err(user(format!(
+                "invalid --format '{other}' (expected json|ndjson)"
+            )))
+        }
+    }
     Ok(())
 }

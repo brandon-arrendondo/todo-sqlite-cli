@@ -44,6 +44,54 @@ fn export_completed_groups_by_date() {
 }
 
 #[test]
+fn export_todo_ndjson_one_per_line() {
+    let sb = Sandbox::new();
+    let _a = sb.add("a");
+    let _b = sb.add("b");
+
+    let out = sb
+        .cmd()
+        .args(["export-todo", "--format", "ndjson"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = s.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 2);
+    for l in &lines {
+        let v: serde_json::Value = serde_json::from_str(l).unwrap();
+        assert!(v.get("id").is_some(), "NDJSON line must be a bare task");
+        assert!(v.get("tasks").is_none(), "must not be wrapped");
+    }
+}
+
+#[test]
+fn export_completed_ndjson_is_flat() {
+    // Default export-completed groups by date; NDJSON should drop the grouping
+    // and emit each task as its own line (date is recoverable via completed_at).
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    let b = sb.add("b");
+    sb.cmd().args(["done", &a.to_string()]).assert().success();
+    sb.cmd().args(["done", &b.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["export-completed", "--format", "ndjson"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = s.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 2, "expected 2 flat NDJSON tasks, got:\n{s}");
+    for l in &lines {
+        let v: serde_json::Value = serde_json::from_str(l).unwrap();
+        assert!(v.get("completed_at").is_some(), "task must carry its own date");
+        assert!(v.get("completed").is_none(), "must not be wrapped/grouped");
+    }
+}
+
+#[test]
 fn export_completed_since_filter() {
     let sb = Sandbox::new();
     let a = sb.add("a");

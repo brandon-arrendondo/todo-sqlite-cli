@@ -15,6 +15,14 @@ pub fn print_tasks_json(tasks: &[Task]) {
     println!("{}", serde_json::to_string(&v).unwrap());
 }
 
+/// Emit one task as a standalone JSON object per line (NDJSON / JSON Lines).
+/// No wrapper key, no surrounding array — each line parses independently.
+pub fn print_tasks_ndjson(tasks: &[Task]) {
+    for t in tasks {
+        println!("{}", serde_json::to_string(t).unwrap());
+    }
+}
+
 #[derive(Serialize)]
 struct DateGroup<'a> {
     date: String,
@@ -44,6 +52,14 @@ pub fn print_completed_json(tasks: &[Task], pretty: bool) {
         serde_json::to_string(&v).unwrap()
     };
     println!("{s}");
+}
+
+/// NDJSON form for completed tasks: one task per line, flat (no date groups).
+/// Each line carries its own `completed_at` so date grouping is recoverable.
+pub fn print_completed_ndjson(tasks: &[Task]) {
+    for t in tasks {
+        println!("{}", serde_json::to_string(t).unwrap());
+    }
 }
 
 pub fn print_task_text(task: &Task, verbose: bool) {

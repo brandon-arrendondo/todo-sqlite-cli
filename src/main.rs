@@ -112,12 +112,14 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             since,
             until,
             pretty,
+            format,
         } => commands::export_completed::run(
             db_path,
             json,
             since.as_deref(),
             until.as_deref(),
             pretty,
+            &format,
         ),
         Command::ExportTodo { format, verbose } => {
             commands::export_todo::run(db_path, json, &format, verbose)

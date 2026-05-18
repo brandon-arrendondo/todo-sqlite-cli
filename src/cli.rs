@@ -50,6 +50,10 @@ pub struct Cli {
     pub db: Option<PathBuf>,
 
     /// Emit machine-readable JSON output. Supported on every command.
+    /// On `list` / `export-todo` the array is wrapped: `{"tasks": [...]}`.
+    /// On `export-completed` it is wrapped and grouped: `{"completed": [{"date": "...", "tasks": [...]}, ...]}`.
+    /// Single-task commands (`next`, `add`, `start`, `stop`, `revert`, `done`, `show`, `edit`) emit a bare task object.
+    /// For streaming-friendly one-object-per-line output on list/export commands, prefer `--format ndjson`.
     #[arg(long, global = true)]
     pub json: bool,
 
@@ -98,7 +102,8 @@ pub enum Command {
         /// Cap the number of rows returned.
         #[arg(long)]
         limit: Option<i64>,
-        /// Output format: table | json | markdown.
+        /// Output format: table | json | ndjson | markdown.
+        /// `json` wraps tasks in `{"tasks": [...]}`; `ndjson` emits one task object per line (no wrapper) for streaming/grep/jq pipelines.
         #[arg(long, default_value = "table")]
         format: String,
         /// Only include tasks with created_at >= SINCE (YYYY-MM-DD or RFC3339). For incremental re-reads between agent turns.
@@ -190,7 +195,7 @@ pub enum Command {
         id: i64,
     },
 
-    /// Export completed tasks as JSON, grouped by completion date (descending). Compact by default.
+    /// Export completed tasks. Default JSON shape: `{"completed": [{"date": "YYYY-MM-DD", "tasks": [...]}, ...]}`, descending by date, compact.
     ExportCompleted {
         /// Inclusive lower bound on completed_at (YYYY-MM-DD or RFC3339).
         #[arg(long, value_name = "DATE")]
@@ -198,14 +203,17 @@ pub enum Command {
         /// Exclusive upper bound on completed_at (YYYY-MM-DD or RFC3339).
         #[arg(long, value_name = "DATE")]
         until: Option<String>,
-        /// Pretty-print the JSON output (multi-line, indented). Default is compact.
+        /// Pretty-print the JSON output (multi-line, indented). Default is compact. Ignored when --format=ndjson.
         #[arg(long)]
         pretty: bool,
+        /// Output format: json | ndjson. `ndjson` emits one task object per line (no date grouping; each task carries its own completed_at).
+        #[arg(long, default_value = "json")]
+        format: String,
     },
 
     /// Export in-progress + partial + pending tasks.
     ExportTodo {
-        /// Output format: json | markdown. Markdown is terse by default.
+        /// Output format: json | ndjson | markdown. `json` wraps tasks in `{"tasks": [...]}`; `ndjson` emits one task per line for streaming; markdown is terse by default.
         #[arg(long, default_value = "json")]
         format: String,
         /// Use heading-per-field markdown when --format markdown (default is terse).

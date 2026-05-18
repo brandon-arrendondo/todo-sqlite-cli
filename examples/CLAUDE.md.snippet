@@ -30,6 +30,19 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli export-completed` — compact JSON by default; pass
   `--pretty` only for human review.
 
+**JSON output shape (important when piping to `jq` / Python):**
+
+- `list --json` and `export-todo` JSON wrap tasks: `{"tasks": [...]}`.
+  Unwrap with `jq '.tasks[]'` or `json.load(sys.stdin)["tasks"]`.
+- `export-completed` JSON wraps and groups by date:
+  `{"completed": [{"date": "YYYY-MM-DD", "tasks": [...]}, ...]}`.
+- Single-task commands (`next --json`, `show --json`, `add --json`,
+  `start/stop/done/revert/edit --json`) return a bare task object.
+- For streaming pipelines, prefer `--format ndjson` on `list`,
+  `export-todo`, or `export-completed` — one task object per line, no
+  wrapper, no date grouping. Composes cleanly with `jq -c`, `grep`, `head`,
+  and shell line counts.
+
 **When picking up work:**
 
 - `todo-sqlite-cli start <id>` before coding. If another task was already

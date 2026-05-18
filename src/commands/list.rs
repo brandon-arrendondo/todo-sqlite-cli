@@ -116,18 +116,26 @@ pub fn run(
         return Ok(());
     }
 
-    if json {
-        format::print_tasks_json(&tasks);
+    // `--format` is the source of truth; `--json` is shorthand for `json` when
+    // `--format` is left at its default. An explicit `--format ndjson --json`
+    // means the user wanted NDJSON.
+    let effective_fmt = if fmt != "table" {
+        fmt
+    } else if json {
+        "json"
     } else {
-        match fmt {
-            "table" => format::print_tasks_table(&tasks),
-            "json" => format::print_tasks_json(&tasks),
-            "markdown" => print!("{}", format::markdown_todo(&tasks, verbose)),
-            other => {
-                return Err(user(format!(
-                    "invalid --format '{other}' (expected table|json|markdown)"
-                )))
-            }
+        "table"
+    };
+
+    match effective_fmt {
+        "table" => format::print_tasks_table(&tasks),
+        "json" => format::print_tasks_json(&tasks),
+        "ndjson" => format::print_tasks_ndjson(&tasks),
+        "markdown" => print!("{}", format::markdown_todo(&tasks, verbose)),
+        other => {
+            return Err(user(format!(
+                "invalid --format '{other}' (expected table|json|ndjson|markdown)"
+            )))
         }
     }
     Ok(())

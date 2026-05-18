@@ -53,12 +53,13 @@ pub fn run(db_path: &Path, _json_flag: bool, fmt: &str, verbose: bool) -> CliRes
 
     match fmt {
         "json" => format::print_tasks_json(&tasks),
+        "ndjson" => format::print_tasks_ndjson(&tasks),
         "markdown" => {
             print!("{}", format::markdown_todo(&tasks, verbose));
         }
         other => {
             return Err(user(format!(
-                "invalid --format '{other}' (expected json|markdown)"
+                "invalid --format '{other}' (expected json|ndjson|markdown)"
             )))
         }
     }
