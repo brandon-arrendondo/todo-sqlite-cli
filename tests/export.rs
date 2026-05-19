@@ -86,7 +86,10 @@ fn export_completed_ndjson_is_flat() {
     assert_eq!(lines.len(), 2, "expected 2 flat NDJSON tasks, got:\n{s}");
     for l in &lines {
         let v: serde_json::Value = serde_json::from_str(l).unwrap();
-        assert!(v.get("completed_at").is_some(), "task must carry its own date");
+        assert!(
+            v.get("completed_at").is_some(),
+            "task must carry its own date"
+        );
         assert!(v.get("completed").is_none(), "must not be wrapped/grouped");
     }
 }

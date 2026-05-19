@@ -4,7 +4,7 @@ use crate::db;
 use crate::error::{user, CliResult};
 use crate::format;
 
-pub fn run(db_path: &Path, json: bool, id: i64, verbose: bool) -> CliResult<()> {
+pub fn run(db_path: &Path, json: bool, id: i64, verbose: bool, fmt: &str) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -12,10 +12,24 @@ pub fn run(db_path: &Path, json: bool, id: i64, verbose: bool) -> CliResult<()> 
         ));
     }
     let t = db::load_task(&conn, id)?;
-    if json {
-        format::print_task_json(&t);
+
+    let effective_fmt = if fmt != "text" {
+        fmt
+    } else if json {
+        "json"
     } else {
-        format::print_task_text(&t, verbose);
+        "text"
+    };
+
+    match effective_fmt {
+        "text" => format::print_task_text(&t, verbose),
+        "json" => format::print_task_json(&t),
+        "ndjson" => format::print_tasks_ndjson(std::slice::from_ref(&t)),
+        other => {
+            return Err(user(format!(
+                "invalid --format '{other}' (expected text|json|ndjson)"
+            )))
+        }
     }
     Ok(())
 }

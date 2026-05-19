@@ -154,6 +154,10 @@ pub enum Command {
         /// Print all fields, including default values (status=pending, priority=P3) and created_at.
         #[arg(long)]
         verbose: bool,
+        /// Output format: text | json | ndjson.
+        /// `json` emits a bare task object; `ndjson` emits the same object as a single JSON line (consistent with list --format ndjson for scripting).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// Edit an existing task. Provide one or more of the flags below.

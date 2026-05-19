@@ -81,7 +81,11 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
         Command::Stop { id } => commands::stop::run(db_path, json, id),
         Command::Revert { id } => commands::revert::run(db_path, json, id),
         Command::Done { id } => commands::done::run(db_path, json, id),
-        Command::Show { id, verbose } => commands::show::run(db_path, json, id, verbose),
+        Command::Show {
+            id,
+            verbose,
+            format,
+        } => commands::show::run(db_path, json, id, verbose, &format),
         Command::Edit {
             id,
             title,

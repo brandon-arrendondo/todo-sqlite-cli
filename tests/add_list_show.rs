@@ -110,7 +110,94 @@ fn list_invalid_format_lists_ndjson_in_error() {
         .unwrap();
     assert!(!out.status.success());
     let s = String::from_utf8(out.stderr).unwrap();
-    assert!(s.contains("ndjson"), "error must advertise ndjson, got: {s}");
+    assert!(
+        s.contains("ndjson"),
+        "error must advertise ndjson, got: {s}"
+    );
+}
+
+#[test]
+fn show_ndjson_emits_bare_object_on_one_line() {
+    let sb = Sandbox::new();
+    let id = sb.add("my task");
+
+    let out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--format", "ndjson"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = s.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly one NDJSON line, got:\n{s}"
+    );
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert!(v.get("tasks").is_none(), "ndjson must not be wrapped");
+    assert_eq!(v["id"].as_i64().unwrap(), id);
+    assert_eq!(v["title"].as_str().unwrap(), "my task");
+}
+
+#[test]
+fn show_format_json_emits_bare_object() {
+    let sb = Sandbox::new();
+    let id = sb.add("another task");
+
+    let out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v.get("tasks").is_none(),
+        "show --format json must emit bare object"
+    );
+    assert_eq!(v["id"].as_i64().unwrap(), id);
+}
+
+#[test]
+fn show_json_flag_still_works() {
+    let sb = Sandbox::new();
+    let id = sb.add("flagged task");
+
+    let out = sb
+        .cmd()
+        .args(["--json", "show", &id.to_string()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["id"].as_i64().unwrap(), id);
+}
+
+#[test]
+fn show_ndjson_consistent_with_list_ndjson() {
+    // A task fetched via `show --format ndjson` must parse the same way as the same task
+    // from `list --format ndjson` — one bare object per line, no wrapper.
+    let sb = Sandbox::new();
+    let id = sb.add("shared task");
+
+    let show_out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--format", "ndjson"])
+        .output()
+        .unwrap();
+    let list_out = sb
+        .cmd()
+        .args(["list", "--format", "ndjson"])
+        .output()
+        .unwrap();
+
+    let show_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8(show_out.stdout).unwrap().trim()).unwrap();
+    let list_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8(list_out.stdout).unwrap().trim()).unwrap();
+    assert_eq!(show_v["id"], list_v["id"]);
+    assert_eq!(show_v["title"], list_v["title"]);
 }
 
 #[test]

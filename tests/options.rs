@@ -146,12 +146,7 @@ fn edit_append_details_seeds_when_empty() {
     let sb = Sandbox::new();
     let id = sb.add("task");
     sb.cmd()
-        .args([
-            "edit",
-            &id.to_string(),
-            "--append-details",
-            "first note",
-        ])
+        .args(["edit", &id.to_string(), "--append-details", "first note"])
         .assert()
         .success();
     let out = sb
