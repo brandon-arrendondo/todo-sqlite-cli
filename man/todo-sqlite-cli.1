@@ -130,6 +130,10 @@ Pass
 .B \-\-verbose
 to print every field including
 .IR created_at .
+.B \-\-format text|json|ndjson|markdown
+selects the output format
+.RI ( text
+is the default).
 .TP
 .B edit \fIID\fR
 Edit an existing task. Flags:
@@ -169,9 +173,10 @@ Flags:
 .B \-\-pretty
 (indented JSON for human review; ignored when
 .BR "\-\-format ndjson" ),
-.B \-\-format json|ndjson
+.B \-\-format json|ndjson|markdown
 (ndjson emits one task object per line, flat — each task carries its own
-.IR completed_at ).
+.IR completed_at ;
+markdown emits a date-grouped checklist).
 .TP
 .B export-todo
 Export active + partial + pending tasks. Flags:

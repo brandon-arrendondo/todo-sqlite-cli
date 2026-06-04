@@ -154,7 +154,7 @@ pub enum Command {
         /// Print all fields, including default values (status=pending, priority=P3) and created_at.
         #[arg(long)]
         verbose: bool,
-        /// Output format: text | json | ndjson.
+        /// Output format: text | json | ndjson | markdown.
         /// `json` emits a bare task object; `ndjson` emits the same object as a single JSON line (consistent with list --format ndjson for scripting).
         #[arg(long, default_value = "text")]
         format: String,
@@ -210,7 +210,7 @@ pub enum Command {
         /// Pretty-print the JSON output (multi-line, indented). Default is compact. Ignored when --format=ndjson.
         #[arg(long)]
         pretty: bool,
-        /// Output format: json | ndjson. `ndjson` emits one task object per line (no date grouping; each task carries its own completed_at).
+        /// Output format: json | ndjson | markdown. `ndjson` emits one task object per line (no date grouping; each task carries its own completed_at). `markdown` emits a date-grouped checklist.
         #[arg(long, default_value = "json")]
         format: String,
     },

@@ -75,9 +75,10 @@ pub fn run(
     match fmt {
         "json" => format::print_completed_json(&tasks, pretty),
         "ndjson" => format::print_completed_ndjson(&tasks),
+        "markdown" => print!("{}", format::markdown_completed(&tasks)),
         other => {
             return Err(user(format!(
-                "invalid --format '{other}' (expected json|ndjson)"
+                "invalid --format '{other}' (expected json|ndjson|markdown)"
             )))
         }
     }

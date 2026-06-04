@@ -25,9 +25,10 @@ pub fn run(db_path: &Path, json: bool, id: i64, verbose: bool, fmt: &str) -> Cli
         "text" => format::print_task_text(&t, verbose),
         "json" => format::print_task_json(&t),
         "ndjson" => format::print_tasks_ndjson(std::slice::from_ref(&t)),
+        "markdown" => print!("{}", format::markdown_task(&t)),
         other => {
             return Err(user(format!(
-                "invalid --format '{other}' (expected text|json|ndjson)"
+                "invalid --format '{other}' (expected text|json|ndjson|markdown)"
             )))
         }
     }

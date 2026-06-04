@@ -112,6 +112,66 @@ pub fn print_tasks_table(tasks: &[Task]) {
     }
 }
 
+pub fn markdown_task(task: &Task) -> String {
+    let mut buf = format!("# Task {}: {}\n\n", task.id, task.title);
+    buf.push_str(&format!("- **Status:** {}\n", task.status));
+    buf.push_str(&format!("- **Priority:** P{}\n", task.priority));
+    if !task.tags.is_empty() {
+        buf.push_str(&format!("- **Tags:** {}\n", task.tags.join(", ")));
+    }
+    if !task.depends_on.is_empty() {
+        let deps: Vec<String> = task.depends_on.iter().map(|d| d.to_string()).collect();
+        let suffix = if task.blocked { " (blocked)" } else { "" };
+        buf.push_str(&format!(
+            "- **Dependencies:** {}{}\n",
+            deps.join(", "),
+            suffix
+        ));
+    }
+    buf.push_str(&format!("- **Created:** {}\n", task.created_at));
+    if let Some(s) = &task.started_at {
+        buf.push_str(&format!("- **Started:** {s}\n"));
+    }
+    if let Some(c) = &task.completed_at {
+        buf.push_str(&format!("- **Completed:** {c}\n"));
+    }
+    if let Some(d) = &task.details {
+        buf.push_str("\n**Details:**\n\n");
+        buf.push_str(d);
+        if !d.ends_with('\n') {
+            buf.push('\n');
+        }
+    }
+    buf
+}
+
+pub fn markdown_completed(tasks: &[Task]) -> String {
+    let mut groups: std::collections::BTreeMap<String, Vec<&Task>> =
+        std::collections::BTreeMap::new();
+    for t in tasks {
+        let date = t
+            .completed_at
+            .as_deref()
+            .map(|s| s.split('T').next().unwrap_or(s).to_string())
+            .unwrap_or_default();
+        groups.entry(date).or_default().push(t);
+    }
+    let mut dates: Vec<String> = groups.keys().cloned().collect();
+    dates.sort_by(|a, b| b.cmp(a));
+
+    let mut buf = String::from("# Completed\n");
+    for date in &dates {
+        buf.push_str(&format!("\n## {date}\n\n"));
+        for t in &groups[date] {
+            buf.push_str(&format!("- {} {}\n", t.id, t.title));
+            if !t.tags.is_empty() {
+                buf.push_str(&format!("  tags: {}\n", t.tags.join(",")));
+            }
+        }
+    }
+    buf
+}
+
 pub fn print_ids(tasks: &[Task], json: bool) {
     if json {
         let ids: Vec<i64> = tasks.iter().map(|t| t.id).collect();

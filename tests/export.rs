@@ -116,3 +116,43 @@ fn export_completed_since_filter() {
         .sum();
     assert_eq!(total, 0);
 }
+
+#[test]
+fn export_todo_markdown_contains_tasks() {
+    let sb = Sandbox::new();
+    sb.add("pending task");
+    sb.add_with(&["started task", "--start"]);
+
+    let out = sb
+        .cmd()
+        .args(["export-todo", "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("pending task"));
+    assert!(s.contains("started task"));
+    assert!(s.starts_with("# TODO"));
+}
+
+#[test]
+fn export_completed_markdown_groups_by_date() {
+    let sb = Sandbox::new();
+    let a = sb.add("alpha");
+    let b = sb.add("beta");
+    sb.cmd().args(["done", &a.to_string()]).assert().success();
+    sb.cmd().args(["done", &b.to_string()]).assert().success();
+
+    let out = sb
+        .cmd()
+        .args(["export-completed", "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.starts_with("# Completed"), "must start with # Completed");
+    assert!(s.contains("alpha"));
+    assert!(s.contains("beta"));
+    // Date heading should be present
+    assert!(s.contains("## "), "must have date section headings");
+}

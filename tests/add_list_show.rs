@@ -221,3 +221,45 @@ fn list_tag_filter_matches_only_tagged_tasks() {
         .collect();
     assert_eq!(ids, vec![a, c]);
 }
+
+#[test]
+fn list_markdown_contains_title() {
+    let sb = Sandbox::new();
+    sb.add("do the thing");
+
+    let out = sb
+        .cmd()
+        .args(["list", "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        s.contains("do the thing"),
+        "markdown must contain task title"
+    );
+    assert!(
+        s.starts_with("# TODO"),
+        "markdown must start with # TODO header"
+    );
+}
+
+#[test]
+fn show_markdown_contains_title_and_fields() {
+    let sb = Sandbox::new();
+    let id = sb.add_with(&["my task", "--tag", "foo"]);
+
+    let out = sb
+        .cmd()
+        .args(["show", &id.to_string(), "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("my task"), "markdown must contain task title");
+    assert!(s.contains("foo"), "markdown must contain tag");
+    assert!(
+        s.contains(&format!("# Task {id}:")),
+        "must have h1 with task id"
+    );
+}
