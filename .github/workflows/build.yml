@@ -102,6 +102,7 @@ jobs:
           cp THIRD_PARTY_LICENSES.txt "${ARTIFACT_DIR}/"
           cp todo-sqlite-cli.cdx.json "${ARTIFACT_DIR}/"
           cp man/todo-sqlite-cli.1 "${ARTIFACT_DIR}/man/"
+          cp -r mcp_server "${ARTIFACT_DIR}/"
           echo "=== Artifacts staged ==="
           ls -lhR "${ARTIFACT_DIR}/"
           echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> $GITHUB_ENV
@@ -118,8 +119,9 @@ jobs:
           Copy-Item "LICENSE" -Destination $ARTIFACT_DIR
           Copy-Item "THIRD_PARTY_LICENSES.txt" -Destination $ARTIFACT_DIR
           Copy-Item "todo-sqlite-cli.cdx.json" -Destination $ARTIFACT_DIR
+          Copy-Item -Recurse "mcp_server" -Destination $ARTIFACT_DIR
           Write-Host "=== Artifacts staged ==="
-          Get-ChildItem $ARTIFACT_DIR
+          Get-ChildItem $ARTIFACT_DIR -Recurse
           echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> $env:GITHUB_ENV
 
       - name: Upload Build Artifacts
