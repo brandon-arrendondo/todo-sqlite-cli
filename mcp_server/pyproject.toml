@@ -1,0 +1,11 @@
+[project]
+name = "todo-sqlite-cli-mcp"
+version = "0.1.0"
+description = "MCP server wrapping todo-sqlite-cli"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+todo-mcp-server = "server:main"

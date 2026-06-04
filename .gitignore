@@ -6,3 +6,5 @@
 .todo-sqlite-cli
 THIRD_PARTY_LICENSES.txt
 *.cdx.json
+__pycache__/
+*.pyc
