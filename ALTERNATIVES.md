@@ -11,13 +11,13 @@ where existing options would serve you better.
 |--------------------------------|------------------------------------|
 | Scope                          | **Per-project** (walk-up marker, like `.git`) |
 | Storage                        | Single SQLite file                 |
-| Transport                      | Plain CLI (no MCP, no daemon, no TTY) |
+| Transport                      | CLI-first; optional Python MCP server |
 | Primary audience               | Coding agents (Claude Code & friends) |
 | Secondary audience             | Humans, shell scripts, CI jobs     |
-| Runtime                        | Single static binary               |
+| Runtime                        | Single static binary (+ optional `mcp` Python package) |
 
 No other tool surveyed combines all five rows. The closest functional
-overlap is **`todolist-mcp`** (SQLite + agent-aimed, but MCP transport
+overlap is **`todolist-mcp`** (SQLite + agent-aimed, but MCP-only transport
 and a single global DB). The closest spiritual overlap is **Claude
 Code's built-in TodoWrite**, which is ephemeral and per-session.
 
@@ -39,15 +39,14 @@ Python · SQLite · MCP server · also ships a FastAPI/HTMX kanban UI.
 
 Closest *functional* competitor: SQLite-backed, explicitly agent-aimed.
 Differences:
-- MCP transport (requires an MCP-aware client and a long-lived server
-  process) vs a plain CLI you can call from any shell, script, CI job,
-  or non-MCP agent.
+- MCP-only transport vs CLI-first with an optional MCP wrapper.
 - Single global DB vs per-project walk-up marker.
 - Python runtime + web UI vs single static binary.
 
-Pick `todolist-mcp` if you want a web kanban view and your agents are
-all MCP-aware. Pick this if you want zero runtime deps and per-project
-isolation.
+Pick `todolist-mcp` if you want a web kanban view and your storage logic
+in Python. Pick this if you want per-project isolation, zero runtime deps
+for the core binary, and the option to call it from shell, CI, or MCP
+interchangeably.
 
 ### mcp-shrimp-task-manager ([cjo4m06](https://github.com/cjo4m06/mcp-shrimp-task-manager))
 TypeScript/Node · JSON + React web UI · MCP server.
@@ -109,7 +108,7 @@ tracking rather than agent state.
 
 - Your tasks are personal, not project-scoped → Taskwarrior or Todoist.
 - You want a TUI / kanban / mobile sync → terminalist, dstask, Todoist.
-- Your agents are all MCP-native and you want a web UI →
-  `todolist-mcp`.
+- Your agents are all MCP-native and you want a web kanban UI →
+  `todolist-mcp` (this tool's MCP server has no UI).
 - You only need within-session task tracking → Claude Code's built-in
   `TodoWrite` is already there.

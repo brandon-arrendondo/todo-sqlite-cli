@@ -4,6 +4,11 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 `.todo-sqlite-cli` marker at the repo root (or `$TODO_SQLITE_CLI_DB`, or the
 `--db` flag — in that precedence order).
 
+> **If the MCP server is wired up** (`todo` in your MCP servers config), use
+> the MCP tools (`list_tasks`, `add_task`, `start_task`, etc.) instead of the
+> shell commands below. The tool descriptions carry the same invariants. The
+> rest of this section is for direct CLI use.
+
 **Before planning or coding, ask the DB — do not read a PLAN.md file:**
 
 - `todo-sqlite-cli next` — the single task to work on right now. Returns
@@ -18,6 +23,7 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   — filter to one status when scanning a subset.
 - `todo-sqlite-cli show <id>` — details for one task. Default output omits
   default-valued fields (`pending`, `P3`); pass `--verbose` for everything.
+  Pass `--format markdown` for a human-readable markdown card.
 
 **Cheap re-polling (token-frugal):**
 
@@ -28,7 +34,8 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli export-todo --format markdown` — terse markdown by
   default; pass `--verbose` only when you need every field.
 - `todo-sqlite-cli export-completed` — compact JSON by default; pass
-  `--pretty` only for human review.
+  `--pretty` only for human review; `--format markdown` for a date-grouped
+  checklist.
 
 **JSON output shape (important when piping to `jq` / Python):**
 
