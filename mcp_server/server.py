@@ -44,7 +44,7 @@ def list_tasks(
 ) -> str:
     """List tasks as JSON.
 
-    status: pending | partial | in-progress | done | active | all
+    status: pending | partial | in-progress | done | rejected | active | all
     tags: filter to tasks carrying ALL listed tags
     limit: cap number of rows
     since: only tasks with created_at >= DATE (YYYY-MM-DD or RFC3339)
@@ -173,9 +173,16 @@ def revert_task(id: int) -> str:
 
 
 @mcp.tool()
-def done_task(id: int) -> str:
-    """Mark a task done. Idempotent. Returns the updated task as JSON."""
-    _run("done", str(id))
+def done_task(id: int, rejected: bool = False) -> str:
+    """Mark a task done. Idempotent. Returns the updated task as JSON.
+
+    rejected: close the task as 'rejected' (declined / won't-do) instead of
+        'done'. Records completed_at but does NOT unblock dependents.
+    """
+    args = ["done", str(id)]
+    if rejected:
+        args.append("--rejected")
+    _run(*args)
     return _run("show", str(id), "--format", "json")
 
 

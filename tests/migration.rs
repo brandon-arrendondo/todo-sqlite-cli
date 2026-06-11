@@ -36,6 +36,37 @@ CREATE INDEX idx_tags_tag ON tags(tag);
 CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
 "#;
 
+const V2_SCHEMA: &str = r#"
+CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    details      TEXT,
+    status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done')),
+    priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+    created_at   TEXT NOT NULL,
+    started_at   TEXT,
+    completed_at TEXT
+);
+CREATE TABLE tags (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (task_id, tag)
+);
+CREATE TABLE deps (
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_id),
+    CHECK (task_id <> depends_on_id)
+);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+CREATE INDEX idx_tags_tag ON tags(tag);
+CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
+"#;
+
 #[test]
 fn v1_database_migrates_to_v2_on_open() {
     let dir = TempDir::new().unwrap();
@@ -70,7 +101,8 @@ fn v1_database_migrates_to_v2_on_open() {
     cmd.env_remove("TODO_SQLITE_CLI_DB");
     cmd.assert().success();
 
-    // Verify schema_version bumped and 'partial' is now an accepted status.
+    // Verify schema_version bumped to the latest and 'partial'/'rejected'
+    // are now accepted statuses (v1 chains through v2 to v3).
     let conn = rusqlite::Connection::open(&db).unwrap();
     let v: String = conn
         .query_row(
@@ -79,7 +111,7 @@ fn v1_database_migrates_to_v2_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "2");
+    assert_eq!(v, "3");
 
     // Existing data preserved.
     let count: i64 = conn
@@ -93,6 +125,68 @@ fn v1_database_migrates_to_v2_on_open() {
         params![],
     )
     .expect("partial must be allowed after migration");
+
+    // 'rejected' must be insertable now.
+    conn.execute(
+        "UPDATE tasks SET status = 'rejected' WHERE title = 'queued'",
+        params![],
+    )
+    .expect("rejected must be allowed after migration");
+}
+
+#[test]
+fn v2_database_migrates_to_v3_on_open() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("v2.db");
+
+    // Build a v2 DB: 'partial' allowed, 'rejected' not yet.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', '2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(title, status, priority, created_at) \
+             VALUES('queued', 'pending', 3, '2026-01-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // 'rejected' must be rejected by the v2 CHECK constraint.
+        conn.execute(
+            "UPDATE tasks SET status = 'rejected' WHERE title = 'queued'",
+            params![],
+        )
+        .expect_err("rejected must NOT be allowed before migration");
+    }
+
+    let mut cmd = Command::cargo_bin("todo-sqlite-cli").unwrap();
+    cmd.arg("--db").arg(&db).args(["list", "--json"]);
+    cmd.env_remove("TODO_SQLITE_CLI_DB");
+    cmd.assert().success();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let v: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v, "3");
+
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+
+    conn.execute(
+        "UPDATE tasks SET status = 'rejected' WHERE title = 'queued'",
+        params![],
+    )
+    .expect("rejected must be allowed after migration");
 }
 
 #[test]

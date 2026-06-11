@@ -29,10 +29,10 @@ pub fn run(
     let status_clause = match status {
         "active" => "status IN ('in-progress','partial','pending')",
         "all" => "1=1",
-        "pending" | "partial" | "in-progress" | "done" => "status = ?S",
+        "pending" | "partial" | "in-progress" | "done" | "rejected" => "status = ?S",
         other => {
             return Err(user(format!(
-                "invalid --status '{other}' (expected pending|partial|in-progress|done|active|all)"
+                "invalid --status '{other}' (expected pending|partial|in-progress|done|rejected|active|all)"
             )))
         }
     };
@@ -66,13 +66,14 @@ pub fn run(
         params.push(Value::Text(norm));
     }
 
-    // Order: in-progress, partial, pending, done; within each, priority ASC, created_at ASC.
+    // Order: in-progress, partial, pending, done, rejected; within each, priority ASC, created_at ASC.
     sql.push_str(
         " ORDER BY CASE status \
            WHEN 'in-progress' THEN 0 \
            WHEN 'partial' THEN 1 \
            WHEN 'pending' THEN 2 \
-           WHEN 'done' THEN 3 END, \
+           WHEN 'done' THEN 3 \
+           WHEN 'rejected' THEN 4 END, \
          priority ASC, created_at ASC, id ASC",
     );
     if let Some(n) = limit {

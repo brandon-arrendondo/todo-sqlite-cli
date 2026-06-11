@@ -93,7 +93,7 @@ pub enum Command {
 
     /// List tasks. Default shows active work (in-progress + partial + pending), in-progress first then partial then pending; within each, by priority.
     List {
-        /// Filter by status: pending | partial | in-progress | done | active | all. `active` = in-progress + partial + pending.
+        /// Filter by status: pending | partial | in-progress | done | rejected | active | all. `active` = in-progress + partial + pending.
         #[arg(long, default_value = "active")]
         status: String,
         /// Filter by tag. Repeatable; multiple tags AND together.
@@ -141,10 +141,13 @@ pub enum Command {
         id: i64,
     },
 
-    /// Mark a task done. Idempotent — calling it on an already-done task does not rewrite completed_at and exits 0.
+    /// Mark a task done. Idempotent — calling it on a task already in the target status does not rewrite completed_at and exits 0.
     Done {
         /// Task ID to mark done.
         id: i64,
+        /// Close the task as `rejected` (declined / won't-do) instead of `done`. Sets completed_at but does NOT unblock dependents.
+        #[arg(long)]
+        rejected: bool,
     },
 
     /// Show task details. Terse-by-default: fields holding default values (status=pending, priority=P3) are omitted.

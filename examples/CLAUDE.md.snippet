@@ -19,8 +19,8 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   termination signal.
 - `todo-sqlite-cli list` — active tasks (in-progress + partial + pending),
   ordered by status then priority. Tabular output is already terse.
-- `todo-sqlite-cli list --status partial` (or `pending` / `done` / `all`)
-  — filter to one status when scanning a subset.
+- `todo-sqlite-cli list --status partial` (or `pending` / `done` /
+  `rejected` / `all`) — filter to one status when scanning a subset.
 - `todo-sqlite-cli show <id>` — details for one task. Default output omits
   default-valued fields (`pending`, `P3`); pass `--verbose` for everything.
   Pass `--format markdown` for a human-readable markdown card.
@@ -61,7 +61,9 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli revert <id>` to discard the start: clears `started_at`
   and returns the task to `pending`.
 - `todo-sqlite-cli done <id>` when the change is committed. Idempotent —
-  safe to call twice.
+  safe to call twice. Pass `--rejected` to close it as `rejected`
+  (declined / won't-do) instead of `done`; this still records
+  `completed_at` but does NOT unblock tasks that depend on it.
 
 **When a new task surfaces:**
 
@@ -90,7 +92,9 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 
 **Statuses:** `pending` → `in-progress` → `done`. `partial` is the paused
 state for a task that was started and then displaced (or stopped) — use
-`start` to resume it, `revert` to discard the start.
+`start` to resume it, `revert` to discard the start. `rejected` is a
+terminal "closed but not done" state (`done --rejected`) for declined or
+won't-do tasks — unlike `done`, it does not satisfy dependency edges.
 
 **Exit codes:** 0 success, 1 user error, 2 system error. Every command
 supports `--json` and `--db PATH`.

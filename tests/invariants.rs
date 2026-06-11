@@ -80,6 +80,89 @@ fn done_is_idempotent() {
 }
 
 #[test]
+fn done_rejected_sets_rejected_status_and_completed_at() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    sb.cmd()
+        .args(["done", &a.to_string(), "--rejected"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rejected"));
+
+    let out = sb
+        .cmd()
+        .args(["show", &a.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"].as_str().unwrap(), "rejected");
+    assert!(
+        v["completed_at"].as_str().is_some(),
+        "rejected is terminal — completed_at must be set"
+    );
+}
+
+#[test]
+fn rejected_task_is_excluded_from_active_list_but_shown_by_status_filter() {
+    let sb = Sandbox::new();
+    let a = sb.add("keep");
+    let b = sb.add("nope");
+    sb.cmd()
+        .args(["done", &b.to_string(), "--rejected"])
+        .assert()
+        .success();
+
+    // Default (active) list must not include the rejected task.
+    let out = sb.cmd().args(["list", "--ids-only"]).output().unwrap();
+    let ids = String::from_utf8_lossy(&out.stdout);
+    assert!(ids.contains(&a.to_string()));
+    assert!(
+        !ids.lines().any(|l| l.trim() == b.to_string()),
+        "rejected task must be hidden from the default active list"
+    );
+
+    // `--status rejected` surfaces exactly the rejected task.
+    let out = sb
+        .cmd()
+        .args(["list", "--status", "rejected", "--ids-only"])
+        .output()
+        .unwrap();
+    let ids = String::from_utf8_lossy(&out.stdout);
+    assert!(ids.lines().any(|l| l.trim() == b.to_string()));
+    assert!(!ids.lines().any(|l| l.trim() == a.to_string()));
+}
+
+#[test]
+fn rejected_dependency_does_not_unblock_dependents() {
+    let sb = Sandbox::new();
+    let dep = sb.add("dep");
+    let blocked = sb.add_with(&["blocked", "--depends-on", &dep.to_string()]);
+
+    // Rejecting the dependency must NOT satisfy it — only `done` unblocks.
+    sb.cmd()
+        .args(["done", &dep.to_string(), "--rejected"])
+        .assert()
+        .success();
+
+    let out = sb
+        .cmd()
+        .args(["show", &blocked.to_string(), "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["blocked"].as_bool().unwrap(),
+        "a rejected dependency must still block dependents"
+    );
+
+    sb.cmd()
+        .args(["start", &blocked.to_string()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unmet dependencies"));
+}
+
+#[test]
 fn start_refuses_blocked_task_and_force_allows_it() {
     let sb = Sandbox::new();
     let a = sb.add("a");
