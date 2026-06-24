@@ -361,6 +361,6 @@ fn rm_cascades_deps_and_tags() {
     let out = sb.cmd().args(["list", "--json"]).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     for t in v["tasks"].as_array().unwrap() {
-        assert_eq!(t["blocked"].as_bool().unwrap(), false);
+        assert!(!t["blocked"].as_bool().unwrap());
     }
 }

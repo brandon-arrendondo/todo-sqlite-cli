@@ -18,3 +18,24 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy -D warnings
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      # knots complexity gate (AIRD ≤ 85). Requires `knots` on PATH:
+      #   cargo install knots
+      # Once knots v1.8.2 is published, this can be replaced with the upstream
+      # hook (its default args are exactly --aird-threshold=85):
+      #   - repo: https://github.com/brandon-arrendondo/knots
+      #     rev: v1.8.2
+      #     hooks:
+      #       - id: knots
+      - id: knots
+        name: knots complexity (AIRD <= 85)
+        entry: knots --aird-threshold=85
+        language: system
+        types: [rust]

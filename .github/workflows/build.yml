@@ -38,6 +38,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Verify Rust installation
         run: |
@@ -67,6 +69,9 @@ jobs:
           cargo install cargo-audit
           cargo audit
         continue-on-error: true
+
+      - name: Lint - Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build Release Binary
         run: cargo build --release

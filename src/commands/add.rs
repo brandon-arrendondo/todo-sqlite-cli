@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::db::{self, Status};
 use crate::error::{system, user, CliResult};
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db_path: &Path,
     json: bool,
