@@ -21,13 +21,6 @@ pub fn run(
     add_dep: &[i64],
     rm_dep: &[i64],
 ) -> CliResult<()> {
-    let details_mutex =
-        details.is_some() as u8 + append_details.is_some() as u8 + clear_details as u8;
-    if details_mutex > 1 {
-        return Err(user(
-            "--details, --append-details, and --clear-details are mutually exclusive",
-        ));
-    }
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -40,12 +33,50 @@ pub fn run(
         .transaction()
         .map_err(|e| system(format!("begin tx failed: {e}")))?;
 
+    apply_title(&tx, id, title)?;
+    apply_details(&tx, id, details, append_details, clear_details)?;
+    apply_priority(&tx, id, priority)?;
+    apply_tags(&tx, id, add_tag, rm_tag)?;
+    apply_deps(&tx, id, add_dep, rm_dep)?;
+
+    tx.commit()
+        .map_err(|e| system(format!("commit failed: {e}")))?;
+
+    let t = db::load_task(&conn, id)?;
+    if json {
+        format::print_task_json(&t);
+    } else {
+        println!("edited {id}");
+    }
+    Ok(())
+}
+
+fn apply_title(tx: &rusqlite::Transaction, id: i64, title: Option<&str>) -> CliResult<()> {
     if let Some(t) = title {
         if t.trim().is_empty() {
             return Err(user("title must not be empty"));
         }
         tx.execute("UPDATE tasks SET title = ?1 WHERE id = ?2", params![t, id])
             .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Apply the mutually-exclusive details edits. `--details`, `--append-details`,
+/// and `--clear-details` may not be combined.
+fn apply_details(
+    tx: &rusqlite::Transaction,
+    id: i64,
+    details: Option<&str>,
+    append_details: Option<&str>,
+    clear_details: bool,
+) -> CliResult<()> {
+    let details_mutex =
+        details.is_some() as u8 + append_details.is_some() as u8 + clear_details as u8;
+    if details_mutex > 1 {
+        return Err(user(
+            "--details, --append-details, and --clear-details are mutually exclusive",
+        ));
     }
     if let Some(d) = details {
         tx.execute(
@@ -79,6 +110,10 @@ pub fn run(
         tx.execute("UPDATE tasks SET details = NULL WHERE id = ?1", params![id])
             .map_err(|e| system(format!("update failed: {e}")))?;
     }
+    Ok(())
+}
+
+fn apply_priority(tx: &rusqlite::Transaction, id: i64, priority: Option<i64>) -> CliResult<()> {
     if let Some(p) = priority {
         tx.execute(
             "UPDATE tasks SET priority = ?1 WHERE id = ?2",
@@ -86,6 +121,15 @@ pub fn run(
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
+    Ok(())
+}
+
+fn apply_tags(
+    tx: &rusqlite::Transaction,
+    id: i64,
+    add_tag: &[String],
+    rm_tag: &[String],
+) -> CliResult<()> {
     for tag in add_tag {
         tx.execute(
             "INSERT OR IGNORE INTO tags(task_id, tag) VALUES(?1, ?2)",
@@ -100,6 +144,15 @@ pub fn run(
         )
         .map_err(|e| system(format!("tag delete failed: {e}")))?;
     }
+    Ok(())
+}
+
+fn apply_deps(
+    tx: &rusqlite::Transaction,
+    id: i64,
+    add_dep: &[i64],
+    rm_dep: &[i64],
+) -> CliResult<()> {
     for dep in add_dep {
         if *dep == id {
             return Err(user("a task cannot depend on itself"));
@@ -113,7 +166,7 @@ pub fn run(
         if exists.is_none() {
             return Err(user(format!("dependency task {dep} not found")));
         }
-        if would_create_cycle(&tx, id, *dep)? {
+        if would_create_cycle(tx, id, *dep)? {
             return Err(user(format!(
                 "adding dependency {dep} would create a cycle"
             )));
@@ -130,16 +183,6 @@ pub fn run(
             params![id, dep],
         )
         .map_err(|e| system(format!("dep delete failed: {e}")))?;
-    }
-
-    tx.commit()
-        .map_err(|e| system(format!("commit failed: {e}")))?;
-
-    let t = db::load_task(&conn, id)?;
-    if json {
-        format::print_task_json(&t);
-    } else {
-        println!("edited {id}");
     }
     Ok(())
 }

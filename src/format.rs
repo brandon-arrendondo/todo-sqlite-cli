@@ -6,6 +6,31 @@ use crate::db::Task;
 const DEFAULT_PRIORITY: i64 = 3;
 const DEFAULT_STATUS: &str = "pending";
 
+/// Format a task's dependency ids joined by `sep`, with a trailing
+/// ` (blocked)` marker when the task is blocked. Callers should guard on
+/// `!task.depends_on.is_empty()` and supply their own label.
+fn format_deps(task: &Task, sep: &str) -> String {
+    let deps: Vec<String> = task.depends_on.iter().map(|d| d.to_string()).collect();
+    let suffix = if task.blocked { " (blocked)" } else { "" };
+    format!("{}{}", deps.join(sep), suffix)
+}
+
+/// Group tasks by their completion date (the date portion of `completed_at`,
+/// or "" when absent), ordered by date ascending.
+fn group_by_completed_date(tasks: &[Task]) -> std::collections::BTreeMap<String, Vec<&Task>> {
+    let mut groups: std::collections::BTreeMap<String, Vec<&Task>> =
+        std::collections::BTreeMap::new();
+    for t in tasks {
+        let date = t
+            .completed_at
+            .as_deref()
+            .map(|s| s.split('T').next().unwrap_or(s).to_string())
+            .unwrap_or_default();
+        groups.entry(date).or_default().push(t);
+    }
+    groups
+}
+
 pub fn print_task_json(task: &Task) {
     println!("{}", serde_json::to_string(task).unwrap());
 }
@@ -30,16 +55,7 @@ struct DateGroup<'a> {
 }
 
 pub fn print_completed_json(tasks: &[Task], pretty: bool) {
-    let mut groups: std::collections::BTreeMap<String, Vec<&Task>> =
-        std::collections::BTreeMap::new();
-    for t in tasks {
-        let date = t
-            .completed_at
-            .as_deref()
-            .map(|s| s.split('T').next().unwrap_or(s).to_string())
-            .unwrap_or_default();
-        groups.entry(date).or_default().push(t);
-    }
+    let groups = group_by_completed_date(tasks);
     let mut out: Vec<DateGroup> = groups
         .into_iter()
         .map(|(date, tasks)| DateGroup { date, tasks })
@@ -72,9 +88,7 @@ pub fn print_task_text(task: &Task, verbose: bool) {
         println!("Priority: P{}", task.priority);
     }
     if !task.depends_on.is_empty() {
-        let deps: Vec<String> = task.depends_on.iter().map(|d| d.to_string()).collect();
-        let suffix = if task.blocked { " (blocked)" } else { "" };
-        println!("Dependencies: {}{}", deps.join(", "), suffix);
+        println!("Dependencies: {}", format_deps(task, ", "));
     }
     if !task.tags.is_empty() {
         println!("Tags: {}", task.tags.join(", "));
@@ -120,12 +134,9 @@ pub fn markdown_task(task: &Task) -> String {
         buf.push_str(&format!("- **Tags:** {}\n", task.tags.join(", ")));
     }
     if !task.depends_on.is_empty() {
-        let deps: Vec<String> = task.depends_on.iter().map(|d| d.to_string()).collect();
-        let suffix = if task.blocked { " (blocked)" } else { "" };
         buf.push_str(&format!(
-            "- **Dependencies:** {}{}\n",
-            deps.join(", "),
-            suffix
+            "- **Dependencies:** {}\n",
+            format_deps(task, ", ")
         ));
     }
     buf.push_str(&format!("- **Created:** {}\n", task.created_at));
@@ -146,16 +157,7 @@ pub fn markdown_task(task: &Task) -> String {
 }
 
 pub fn markdown_completed(tasks: &[Task]) -> String {
-    let mut groups: std::collections::BTreeMap<String, Vec<&Task>> =
-        std::collections::BTreeMap::new();
-    for t in tasks {
-        let date = t
-            .completed_at
-            .as_deref()
-            .map(|s| s.split('T').next().unwrap_or(s).to_string())
-            .unwrap_or_default();
-        groups.entry(date).or_default().push(t);
-    }
+    let groups = group_by_completed_date(tasks);
     let mut dates: Vec<String> = groups.keys().cloned().collect();
     dates.sort_by(|a, b| b.cmp(a));
 
@@ -209,9 +211,7 @@ fn markdown_todo_terse(tasks: &[Task]) -> String {
             buf.push_str(&format!("  tags: {}\n", t.tags.join(",")));
         }
         if !t.depends_on.is_empty() {
-            let deps: Vec<String> = t.depends_on.iter().map(|d| d.to_string()).collect();
-            let suffix = if t.blocked { " (blocked)" } else { "" };
-            buf.push_str(&format!("  deps: {}{}\n", deps.join(","), suffix));
+            buf.push_str(&format!("  deps: {}\n", format_deps(t, ",")));
         }
         if let Some(d) = &t.details {
             buf.push_str("  details:\n");
@@ -234,9 +234,7 @@ fn markdown_todo_verbose(tasks: &[Task]) -> String {
         buf.push_str(&format!("# Status: {}\n", t.status));
         buf.push_str(&format!("# Priority: P{}\n", t.priority));
         if !t.depends_on.is_empty() {
-            let deps: Vec<String> = t.depends_on.iter().map(|d| d.to_string()).collect();
-            let suffix = if t.blocked { " (blocked)" } else { "" };
-            buf.push_str(&format!("# Dependencies: {}{}\n", deps.join(", "), suffix));
+            buf.push_str(&format!("# Dependencies: {}\n", format_deps(t, ", ")));
         } else {
             buf.push_str("# Dependencies: none\n");
         }

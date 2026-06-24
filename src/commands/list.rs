@@ -26,59 +26,7 @@ pub fn run(
         ));
     }
 
-    let status_clause = match status {
-        "active" => "status IN ('in-progress','partial','pending')",
-        "all" => "1=1",
-        "pending" | "partial" | "in-progress" | "done" | "rejected" => "status = ?S",
-        other => {
-            return Err(user(format!(
-                "invalid --status '{other}' (expected pending|partial|in-progress|done|rejected|active|all)"
-            )))
-        }
-    };
-
-    let mut sql = String::from(
-        "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
-         FROM tasks WHERE ",
-    );
-    sql.push_str(status_clause);
-
-    let mut params: Vec<Value> = Vec::new();
-    if status_clause.contains("?S") {
-        sql = sql.replace("?S", &format!("?{}", params.len() + 1));
-        params.push(Value::Text(status.to_string()));
-    }
-
-    if !tags.is_empty() {
-        for tag in tags {
-            let idx = params.len() + 1;
-            sql.push_str(&format!(
-                " AND id IN (SELECT task_id FROM tags WHERE tag = ?{idx})"
-            ));
-            params.push(Value::Text(tag.clone()));
-        }
-    }
-
-    if let Some(s) = since {
-        let norm = db::parse_date_bound(s)?;
-        let idx = params.len() + 1;
-        sql.push_str(&format!(" AND created_at >= ?{idx}"));
-        params.push(Value::Text(norm));
-    }
-
-    // Order: in-progress, partial, pending, done, rejected; within each, priority ASC, created_at ASC.
-    sql.push_str(
-        " ORDER BY CASE status \
-           WHEN 'in-progress' THEN 0 \
-           WHEN 'partial' THEN 1 \
-           WHEN 'pending' THEN 2 \
-           WHEN 'done' THEN 3 \
-           WHEN 'rejected' THEN 4 END, \
-         priority ASC, created_at ASC, id ASC",
-    );
-    if let Some(n) = limit {
-        sql.push_str(&format!(" LIMIT {n}"));
-    }
+    let (sql, params) = build_list_query(status, tags, since, limit)?;
 
     let mut stmt = conn
         .prepare(&sql)
@@ -128,11 +76,78 @@ pub fn run(
         "table"
     };
 
+    print_tasks(&tasks, effective_fmt, verbose)
+}
+
+/// Build the `SELECT` and its positional params for the given filters.
+fn build_list_query(
+    status: &str,
+    tags: &[String],
+    since: Option<&str>,
+    limit: Option<i64>,
+) -> CliResult<(String, Vec<Value>)> {
+    let status_clause = match status {
+        "active" => "status IN ('in-progress','partial','pending')",
+        "all" => "1=1",
+        "pending" | "partial" | "in-progress" | "done" | "rejected" => "status = ?S",
+        other => {
+            return Err(user(format!(
+                "invalid --status '{other}' (expected pending|partial|in-progress|done|rejected|active|all)"
+            )))
+        }
+    };
+
+    let mut sql = String::from(
+        "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
+         FROM tasks WHERE ",
+    );
+    sql.push_str(status_clause);
+
+    let mut params: Vec<Value> = Vec::new();
+    if status_clause.contains("?S") {
+        sql = sql.replace("?S", &format!("?{}", params.len() + 1));
+        params.push(Value::Text(status.to_string()));
+    }
+
+    for tag in tags {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(
+            " AND id IN (SELECT task_id FROM tags WHERE tag = ?{idx})"
+        ));
+        params.push(Value::Text(tag.clone()));
+    }
+
+    if let Some(s) = since {
+        let norm = db::parse_date_bound(s)?;
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND created_at >= ?{idx}"));
+        params.push(Value::Text(norm));
+    }
+
+    // Order: in-progress, partial, pending, done, rejected; within each, priority ASC, created_at ASC.
+    sql.push_str(
+        " ORDER BY CASE status \
+           WHEN 'in-progress' THEN 0 \
+           WHEN 'partial' THEN 1 \
+           WHEN 'pending' THEN 2 \
+           WHEN 'done' THEN 3 \
+           WHEN 'rejected' THEN 4 END, \
+         priority ASC, created_at ASC, id ASC",
+    );
+    if let Some(n) = limit {
+        sql.push_str(&format!(" LIMIT {n}"));
+    }
+
+    Ok((sql, params))
+}
+
+/// Render the resolved task list in the requested output format.
+fn print_tasks(tasks: &[Task], effective_fmt: &str, verbose: bool) -> CliResult<()> {
     match effective_fmt {
-        "table" => format::print_tasks_table(&tasks),
-        "json" => format::print_tasks_json(&tasks),
-        "ndjson" => format::print_tasks_ndjson(&tasks),
-        "markdown" => print!("{}", format::markdown_todo(&tasks, verbose)),
+        "table" => format::print_tasks_table(tasks),
+        "json" => format::print_tasks_json(tasks),
+        "ndjson" => format::print_tasks_ndjson(tasks),
+        "markdown" => print!("{}", format::markdown_todo(tasks, verbose)),
         other => {
             return Err(user(format!(
                 "invalid --format '{other}' (expected table|json|ndjson|markdown)"
