@@ -52,6 +52,28 @@ the backlog thinning or just churning." `aging` lists open tasks oldest
 candidate — it does not change `priority` or `next`/`list` ordering itself;
 pair it with `edit --priority` to act on what it surfaces.
 
+## Gates
+
+Some tasks aren't work to be done — they're a checkpoint on a *condition*
+becoming true (e.g. "sqc has reached maintenance-mode stability", gating a
+paper-finalization task). Mark one with `add --gate` (or promote/demote an
+existing task with `edit --gate` / `--no-gate`); the condition is just prose
+in `--details`, judged by a human, not something the CLI evaluates.
+
+```
+$ todo-sqlite-cli add "sqc reaches maintenance mode" --gate \
+    --details "condition: sqc stable for 2 weeks straight"
+$ todo-sqlite-cli next        # skips the gate entirely
+$ todo-sqlite-cli list --kind gate
+```
+
+Being a gate changes how the CLI's own views treat the task: `next` never
+surfaces it (there's no start/stop episode that makes sense for a gate —
+someone re-assesses the condition and calls `done` directly); `aging` keeps
+listing it but never marks it `stale`, since indefinite openness is the
+correct state for a gate, not backlog rot; `list`/`show`/`export-todo`
+prefix `[GATE]` before its title.
+
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the

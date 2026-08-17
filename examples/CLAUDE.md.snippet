@@ -16,7 +16,9 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   the highest-priority unblocked pending task. Prefer this over `list` —
   it returns one task in one query. When no work remains, `next` prints
   nothing (or `null` under `--json`) and exits 0 — use that as a clean
-  termination signal.
+  termination signal. `next` never surfaces a gate task (see **Gates**
+  below); if only gates remain open it still reports nothing actionable,
+  with a stderr hint pointing at `list --kind gate`.
 - `todo-sqlite-cli list` — active tasks (in-progress + partial + pending),
   ordered by status then priority. Tabular output is already terse.
 - `todo-sqlite-cli list --status partial` (or `pending` / `done` /
@@ -89,6 +91,22 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   manage dependency edges (repeatable; cycles are rejected).
 - `todo-sqlite-cli edit <id> --title "..."` / `--priority P2` — rename or
   reprioritize.
+
+**Gates — a task that's a checkpoint, not work:**
+
+- Use `add "condition prose" --gate --details "..."` when the "task" is
+  really "wait until X becomes true" (e.g. a dependency reaching
+  maintenance-mode stability), not something to `start`/work incrementally.
+  Promote or demote an existing task with `edit <id> --gate` /
+  `--no-gate` (mutually exclusive).
+- A gate is invisible to `next` and never flagged `[STALE]` by `aging`
+  regardless of `--stale-days` — indefinite openness is the correct state
+  for a gate, not backlog rot. `list`/`show`/`export-todo` prefix `[GATE]`
+  before its title so it's visually distinct from a real open task; every
+  task object (JSON/ndjson) carries the raw `is_gate` boolean.
+- `list --kind gate` — a readiness dashboard of every open checkpoint (add
+  `--status all` if you also want closed gates). `--kind task` excludes
+  gates from a normal listing.
 
 **Weekly rebase / backlog health:**
 

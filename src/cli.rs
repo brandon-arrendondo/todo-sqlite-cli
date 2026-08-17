@@ -89,6 +89,9 @@ pub enum Command {
         /// Immediately move the new task to in-progress (auto-pauses any prior in-progress task).
         #[arg(long)]
         start: bool,
+        /// Mark this task as a gate: a checkpoint on a condition becoming true (described in --details), not work to be done. Skipped by `next`; never flagged stale by `aging`.
+        #[arg(long)]
+        gate: bool,
     },
 
     /// List tasks. Default shows active work (in-progress + partial + pending), in-progress first then partial then pending; within each, by priority.
@@ -115,6 +118,9 @@ pub enum Command {
         /// Use heading-per-field markdown when --format markdown (default is terse).
         #[arg(long)]
         verbose: bool,
+        /// Filter by kind: gate | task | all. `gate` gives a readiness dashboard of open checkpoints.
+        #[arg(long, default_value = "all")]
+        kind: String,
     },
 
     /// Print the single task to work on next. Order: oldest in-progress, then oldest unblocked partial, then highest-priority unblocked pending. Skips tasks with unmet deps.
@@ -194,6 +200,12 @@ pub enum Command {
         /// Remove a dependency edge. Repeatable.
         #[arg(long = "rm-dep", value_name = "ID")]
         rm_dep: Vec<i64>,
+        /// Mark this task as a gate (see `add --gate`). Mutually exclusive with `--no-gate`.
+        #[arg(long, conflicts_with = "no_gate")]
+        gate: bool,
+        /// Unmark this task as a gate, demoting it back to a regular task.
+        #[arg(long)]
+        no_gate: bool,
     },
 
     /// Delete a task. Cascades to associated tags and dependency edges. IDs are never reused.

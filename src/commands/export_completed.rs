@@ -23,7 +23,7 @@ pub fn run(
     }
 
     let mut sql = String::from(
-        "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
+        "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at \
          FROM tasks WHERE status = 'done'",
     );
     let mut params: Vec<Value> = Vec::new();
@@ -52,12 +52,13 @@ pub fn run(
                 details: row.get(2)?,
                 status: row.get(3)?,
                 priority: row.get(4)?,
+                is_gate: row.get(5)?,
                 tags: Vec::new(),
                 depends_on: Vec::new(),
                 blocked: false,
-                created_at: row.get(5)?,
-                started_at: row.get(6)?,
-                completed_at: row.get(7)?,
+                created_at: row.get(6)?,
+                started_at: row.get(7)?,
+                completed_at: row.get(8)?,
             })
         })
         .map_err(|e| system(format!("query failed: {e}")))?;

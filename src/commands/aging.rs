@@ -15,6 +15,7 @@ struct AgingRow {
     title: String,
     status: String,
     priority: i64,
+    is_gate: bool,
     tags: Vec<String>,
     created_at: String,
     age_days: i64,
@@ -30,7 +31,7 @@ pub fn run(db_path: &Path, json: bool, stale_days: Option<i64>, tags: &[String])
     }
 
     let mut sql = String::from(
-        "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
+        "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at \
          FROM tasks WHERE status IN ('pending','partial','in-progress')",
     );
     let mut params: Vec<Value> = Vec::new();
@@ -53,12 +54,13 @@ pub fn run(db_path: &Path, json: bool, stale_days: Option<i64>, tags: &[String])
                 details: row.get(2)?,
                 status: row.get(3)?,
                 priority: row.get(4)?,
+                is_gate: row.get(5)?,
                 tags: Vec::new(),
                 depends_on: Vec::new(),
                 blocked: false,
-                created_at: row.get(5)?,
-                started_at: row.get(6)?,
-                completed_at: row.get(7)?,
+                created_at: row.get(6)?,
+                started_at: row.get(7)?,
+                completed_at: row.get(8)?,
             })
         })
         .map_err(|e| system(format!("query failed: {e}")))?;
@@ -76,12 +78,16 @@ pub fn run(db_path: &Path, json: bool, stale_days: Option<i64>, tags: &[String])
         .iter()
         .map(|t| {
             let age_days = age_in_days(&t.created_at, now);
-            let stale = stale_days.is_some_and(|n| age_days >= n);
+            // Gates are supposed to sit open indefinitely until their
+            // condition is met — indefinite age is the correct state for a
+            // gate, not backlog rot, so never flag one as stale.
+            let stale = !t.is_gate && stale_days.is_some_and(|n| age_days >= n);
             AgingRow {
                 id: t.id,
                 title: t.title.clone(),
                 status: t.status.clone(),
                 priority: t.priority,
+                is_gate: t.is_gate,
                 tags: t.tags.clone(),
                 created_at: t.created_at.clone(),
                 age_days,
@@ -118,6 +124,7 @@ fn age_in_days(created_at: &str, now: chrono::DateTime<Utc>) -> i64 {
 
 fn print_table(rows: &[AgingRow]) {
     for r in rows {
+        let gate = if r.is_gate { "[GATE] " } else { "" };
         let flag = if r.stale { " [STALE]" } else { "" };
         let tags = if r.tags.is_empty() {
             String::new()
@@ -125,8 +132,8 @@ fn print_table(rows: &[AgingRow]) {
             format!(" [{}]", r.tags.join(","))
         };
         println!(
-            "{:>4}  {:<11}  P{}  age={:>4}d  {}{}{}",
-            r.id, r.status, r.priority, r.age_days, r.title, tags, flag
+            "{:>4}  {:<11}  P{}  age={:>4}d  {}{}{}{}",
+            r.id, r.status, r.priority, r.age_days, gate, r.title, tags, flag
         );
     }
 }

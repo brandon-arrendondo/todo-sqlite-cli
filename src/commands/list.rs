@@ -18,6 +18,7 @@ pub fn run(
     since: Option<&str>,
     ids_only: bool,
     verbose: bool,
+    kind: &str,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -26,7 +27,7 @@ pub fn run(
         ));
     }
 
-    let (sql, params) = build_list_query(status, tags, since, limit)?;
+    let (sql, params) = build_list_query(status, tags, since, limit, kind)?;
 
     let mut stmt = conn
         .prepare(&sql)
@@ -39,12 +40,13 @@ pub fn run(
                 details: row.get(2)?,
                 status: row.get(3)?,
                 priority: row.get(4)?,
+                is_gate: row.get(5)?,
                 tags: Vec::new(),
                 depends_on: Vec::new(),
                 blocked: false,
-                created_at: row.get(5)?,
-                started_at: row.get(6)?,
-                completed_at: row.get(7)?,
+                created_at: row.get(6)?,
+                started_at: row.get(7)?,
+                completed_at: row.get(8)?,
             })
         })
         .map_err(|e| system(format!("query failed: {e}")))?;
@@ -85,6 +87,7 @@ fn build_list_query(
     tags: &[String],
     since: Option<&str>,
     limit: Option<i64>,
+    kind: &str,
 ) -> CliResult<(String, Vec<Value>)> {
     let status_clause = match status {
         "active" => "status IN ('in-progress','partial','pending')",
@@ -98,7 +101,7 @@ fn build_list_query(
     };
 
     let mut sql = String::from(
-        "SELECT id, title, details, status, priority, created_at, started_at, completed_at \
+        "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at \
          FROM tasks WHERE ",
     );
     sql.push_str(status_clause);
@@ -107,6 +110,17 @@ fn build_list_query(
     if status_clause.contains("?S") {
         sql = sql.replace("?S", &format!("?{}", params.len() + 1));
         params.push(Value::Text(status.to_string()));
+    }
+
+    match kind {
+        "all" => {}
+        "gate" => sql.push_str(" AND is_gate = 1"),
+        "task" => sql.push_str(" AND is_gate = 0"),
+        other => {
+            return Err(user(format!(
+                "invalid --kind '{other}' (expected gate|task|all)"
+            )))
+        }
     }
 
     for tag in tags {

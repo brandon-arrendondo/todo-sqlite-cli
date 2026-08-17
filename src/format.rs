@@ -78,9 +78,18 @@ pub fn print_completed_ndjson(tasks: &[Task]) {
     }
 }
 
+/// `[GATE] ` prefix for table/markdown title display, or "" for a regular task.
+fn gate_prefix(task: &Task) -> &'static str {
+    if task.is_gate {
+        "[GATE] "
+    } else {
+        ""
+    }
+}
+
 pub fn print_task_text(task: &Task, verbose: bool) {
     println!("Task ID: {}", task.id);
-    println!("Title: {}", task.title);
+    println!("Title: {}{}", gate_prefix(task), task.title);
     if verbose || task.status != DEFAULT_STATUS {
         println!("Status: {}", task.status);
     }
@@ -120,14 +129,25 @@ pub fn print_tasks_table(tasks: &[Task]) {
             format!(" [{}]", t.tags.join(","))
         };
         println!(
-            "{:>4}  {:<11}  P{}  {}{}{}",
-            t.id, t.status, t.priority, t.title, tags, blocked
+            "{:>4}  {:<11}  P{}  {}{}{}{}",
+            t.id,
+            t.status,
+            t.priority,
+            gate_prefix(t),
+            t.title,
+            tags,
+            blocked
         );
     }
 }
 
 pub fn markdown_task(task: &Task) -> String {
-    let mut buf = format!("# Task {}: {}\n\n", task.id, task.title);
+    let mut buf = format!(
+        "# Task {}: {}{}\n\n",
+        task.id,
+        gate_prefix(task),
+        task.title
+    );
     buf.push_str(&format!("- **Status:** {}\n", task.status));
     buf.push_str(&format!("- **Priority:** P{}\n", task.priority));
     if !task.tags.is_empty() {
@@ -204,6 +224,7 @@ fn markdown_todo_terse(tasks: &[Task]) -> String {
         if t.priority != DEFAULT_PRIORITY {
             head.push_str(&format!("P{} ", t.priority));
         }
+        head.push_str(gate_prefix(t));
         head.push_str(&t.title);
         buf.push_str(&head);
         buf.push('\n');
@@ -230,7 +251,7 @@ fn markdown_todo_verbose(tasks: &[Task]) -> String {
     buf.push_str("# TODO\n\n");
     for t in tasks {
         buf.push_str(&format!("# Task ID: {}\n", t.id));
-        buf.push_str(&format!("# Title: {}\n", t.title));
+        buf.push_str(&format!("# Title: {}{}\n", gate_prefix(t), t.title));
         buf.push_str(&format!("# Status: {}\n", t.status));
         buf.push_str(&format!("# Priority: P{}\n", t.priority));
         if !t.depends_on.is_empty() {

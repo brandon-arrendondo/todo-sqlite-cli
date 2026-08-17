@@ -16,6 +16,7 @@ pub fn run(
     priority: i64,
     depends_on: &[i64],
     start: bool,
+    gate: bool,
 ) -> CliResult<()> {
     if title.trim().is_empty() {
         return Err(user("title must not be empty"));
@@ -49,9 +50,17 @@ pub fn run(
     };
 
     tx.execute(
-        "INSERT INTO tasks(title, details, status, priority, created_at, started_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-        params![title, details, status.as_str(), priority, now, started_at,],
+        "INSERT INTO tasks(title, details, status, priority, is_gate, created_at, started_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            title,
+            details,
+            status.as_str(),
+            priority,
+            gate,
+            now,
+            started_at,
+        ],
     )
     .map_err(|e| system(format!("insert failed: {e}")))?;
     let id = tx.last_insert_rowid();

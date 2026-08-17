@@ -47,6 +47,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             priority,
             depends_on,
             start,
+            gate,
         } => commands::add::run(
             db_path,
             json,
@@ -56,6 +57,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             priority,
             &depends_on,
             start,
+            gate,
         ),
         Command::List {
             status,
@@ -65,6 +67,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             since,
             ids_only,
             verbose,
+            kind,
         } => commands::list::run(
             db_path,
             json,
@@ -75,6 +78,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             since.as_deref(),
             ids_only,
             verbose,
+            &kind,
         ),
         Command::Next => commands::next::run(db_path, json),
         Command::Start { id, force } => commands::start::run(db_path, json, id, force),
@@ -97,6 +101,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             rm_tag,
             add_dep,
             rm_dep,
+            gate,
+            no_gate,
         } => commands::edit::run(
             db_path,
             json,
@@ -110,6 +116,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &rm_tag,
             &add_dep,
             &rm_dep,
+            gate,
+            no_gate,
         ),
         Command::Rm { id } => commands::rm::run(db_path, json, id),
         Command::ExportCompleted {

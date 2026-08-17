@@ -20,6 +20,8 @@ pub fn run(
     rm_tag: &[String],
     add_dep: &[i64],
     rm_dep: &[i64],
+    gate: bool,
+    no_gate: bool,
 ) -> CliResult<()> {
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -36,6 +38,7 @@ pub fn run(
     apply_title(&tx, id, title)?;
     apply_details(&tx, id, details, append_details, clear_details)?;
     apply_priority(&tx, id, priority)?;
+    apply_gate(&tx, id, gate, no_gate)?;
     apply_tags(&tx, id, add_tag, rm_tag)?;
     apply_deps(&tx, id, add_dep, rm_dep)?;
 
@@ -120,6 +123,19 @@ fn apply_priority(tx: &rusqlite::Transaction, id: i64, priority: Option<i64>) ->
             params![p, id],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+fn apply_gate(tx: &rusqlite::Transaction, id: i64, gate: bool, no_gate: bool) -> CliResult<()> {
+    // clap's `conflicts_with` already rejects passing both flags together.
+    if gate {
+        tx.execute("UPDATE tasks SET is_gate = 1 WHERE id = ?1", params![id])
+            .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    if no_gate {
+        tx.execute("UPDATE tasks SET is_gate = 0 WHERE id = ?1", params![id])
+            .map_err(|e| system(format!("update failed: {e}")))?;
     }
     Ok(())
 }

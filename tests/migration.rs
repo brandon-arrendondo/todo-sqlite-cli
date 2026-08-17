@@ -102,7 +102,7 @@ fn v1_database_migrates_to_v2_on_open() {
     cmd.assert().success();
 
     // Verify schema_version bumped to the latest and 'partial'/'rejected'
-    // are now accepted statuses (v1 chains through v2 to v3).
+    // are now accepted statuses (v1 chains through v2, v3, to v4).
     let conn = rusqlite::Connection::open(&db).unwrap();
     let v: String = conn
         .query_row(
@@ -111,7 +111,7 @@ fn v1_database_migrates_to_v2_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "3");
+    assert_eq!(v, "4");
 
     // Existing data preserved.
     let count: i64 = conn
@@ -175,7 +175,7 @@ fn v2_database_migrates_to_v3_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "3");
+    assert_eq!(v, "4");
 
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
@@ -187,6 +187,100 @@ fn v2_database_migrates_to_v3_on_open() {
         params![],
     )
     .expect("rejected must be allowed after migration");
+}
+
+const V3_SCHEMA: &str = r#"
+CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    details      TEXT,
+    status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done','rejected')),
+    priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+    created_at   TEXT NOT NULL,
+    started_at   TEXT,
+    completed_at TEXT
+);
+CREATE TABLE tags (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (task_id, tag)
+);
+CREATE TABLE deps (
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_id),
+    CHECK (task_id <> depends_on_id)
+);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+CREATE INDEX idx_tags_tag ON tags(tag);
+CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
+"#;
+
+#[test]
+fn v3_database_migrates_to_v4_on_open() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("v3.db");
+
+    // Build a v3 DB: no is_gate column yet.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(V3_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', '3')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(title, status, priority, created_at) \
+             VALUES('preexisting', 'pending', 3, '2026-01-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // is_gate must not exist yet on a v3 DB.
+        conn.query_row("SELECT is_gate FROM tasks", [], |r| r.get::<_, i64>(0))
+            .expect_err("is_gate must NOT exist before migration");
+    }
+
+    let mut cmd = Command::cargo_bin("todo-sqlite-cli").unwrap();
+    cmd.arg("--db").arg(&db).args(["list", "--json"]);
+    cmd.env_remove("TODO_SQLITE_CLI_DB");
+    cmd.assert().success();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let v: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v, "4");
+
+    // Pre-existing rows default is_gate to 0.
+    let is_gate: i64 = conn
+        .query_row(
+            "SELECT is_gate FROM tasks WHERE title = 'preexisting'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(is_gate, 0);
+
+    // Column accepts 0/1 only.
+    conn.execute(
+        "UPDATE tasks SET is_gate = 1 WHERE title = 'preexisting'",
+        [],
+    )
+    .expect("is_gate must accept 1");
+    conn.execute(
+        "UPDATE tasks SET is_gate = 2 WHERE title = 'preexisting'",
+        [],
+    )
+    .expect_err("is_gate must reject values outside 0/1");
 }
 
 #[test]
