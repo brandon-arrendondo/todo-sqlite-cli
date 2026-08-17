@@ -218,6 +218,37 @@ pub enum Command {
         format: String,
     },
 
+    /// Cumulative flow diagram data: per-bucket backlog/in-progress/done/rejected
+    /// counts, reconstructed purely from created_at/started_at/completed_at
+    /// (no new schema, no snapshotting).
+    Cfd {
+        /// Inclusive lower bound (YYYY-MM-DD or RFC3339). Defaults to the earliest created_at.
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Inclusive upper bound (YYYY-MM-DD or RFC3339). Defaults to today.
+        #[arg(long, value_name = "DATE")]
+        until: Option<String>,
+        /// Bucket granularity: day | week.
+        #[arg(long, default_value = "day")]
+        bucket: String,
+        /// Output format: ascii | csv | json. `json` shape: `{"buckets": [{"date": "...", "backlog": N, "in_progress": N, "done": N, "rejected": N}, ...]}`.
+        #[arg(long, default_value = "ascii")]
+        format: String,
+    },
+
+    /// List open tasks (pending/partial/in-progress) sorted oldest-first by
+    /// created_at, for spotting backlog items that have aged unnoticed.
+    /// Read-only report — does not change `priority` or any ordering used by
+    /// `next`/`list`; pair with `edit --priority` to act on what it surfaces.
+    Aging {
+        /// Flag tasks with age (in whole days since created_at) >= N as stale.
+        #[arg(long, value_name = "N")]
+        stale_days: Option<i64>,
+        /// Filter by tag. Repeatable; multiple tags AND together.
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+    },
+
     /// Export in-progress + partial + pending tasks.
     ExportTodo {
         /// Output format: json | ndjson | markdown. `json` wraps tasks in `{"tasks": [...]}`; `ndjson` emits one task per line for streaming; markdown is terse by default.

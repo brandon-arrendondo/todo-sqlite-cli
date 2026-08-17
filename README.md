@@ -31,6 +31,27 @@ The DB path is resolved from `--db`, then `$TODO_SQLITE_CLI_DB`, then a
 `.todo-sqlite-cli` marker walked up from cwd (like `.git`). One DB can back
 multiple repos by pointing each repo's marker at the same absolute path.
 
+## Backlog trend reporting
+
+Two read-only, additive report commands, reconstructed from timestamps
+already on `tasks` — no schema change, no snapshotting:
+
+```
+$ todo-sqlite-cli cfd --bucket week
+2026-08-01  backlog=42  in_progress=3  done=410  rejected=8
+2026-08-08  backlog=38  in_progress=4  done=421  rejected=8
+...
+$ todo-sqlite-cli aging --stale-days 14
+  12  pending      P5  age=  61d  low-priority task nobody's touched
+   7  pending      P4  age=  22d  another aging candidate
+```
+
+`cfd` buckets a cumulative flow diagram (`--format ascii|csv|json`) for "is
+the backlog thinning or just churning." `aging` lists open tasks oldest
+`created_at`-first and flags anything past `--stale-days` as a rebase
+candidate — it does not change `priority` or `next`/`list` ordering itself;
+pair it with `edit --priority` to act on what it surfaces.
+
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the

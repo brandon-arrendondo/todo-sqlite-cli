@@ -90,6 +90,20 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli edit <id> --title "..."` / `--priority P2` — rename or
   reprioritize.
 
+**Weekly rebase / backlog health:**
+
+- `todo-sqlite-cli aging --stale-days 14` — open tasks (pending/partial/
+  in-progress), oldest first, with `age_days` and a `stale` flag past the
+  threshold. Read-only — it does not touch `priority` or `next`'s ordering.
+  Use it to spot low-priority tasks aging unnoticed, then `edit --priority`
+  the ones worth pulling forward. `--tag` filters to one area.
+- `todo-sqlite-cli cfd --bucket week` — cumulative flow diagram data
+  (backlog/in-progress/done/rejected counts per bucket), reconstructed
+  from `created_at`/`started_at`/`completed_at` — no separate history
+  table to keep in sync. `--format json` for `{"buckets": [...]}`;
+  `--format csv` for spreadsheets/plotting. Use it to see whether the
+  backlog is actually thinning or just churning between reverts.
+
 **Statuses:** `pending` → `in-progress` → `done`. `partial` is the paused
 state for a task that was started and then displaced (or stopped) — use
 `start` to resume it, `revert` to discard the start. `rejected` is a

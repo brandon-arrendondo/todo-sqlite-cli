@@ -128,5 +128,21 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
         Command::ExportTodo { format, verbose } => {
             commands::export_todo::run(db_path, json, &format, verbose)
         }
+        Command::Aging { stale_days, tags } => {
+            commands::aging::run(db_path, json, stale_days, &tags)
+        }
+        Command::Cfd {
+            since,
+            until,
+            bucket,
+            format,
+        } => commands::cfd::run(
+            db_path,
+            json,
+            since.as_deref(),
+            until.as_deref(),
+            &bucket,
+            &format,
+        ),
     }
 }

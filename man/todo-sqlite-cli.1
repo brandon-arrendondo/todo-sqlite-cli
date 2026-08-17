@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-06-24" "todo-sqlite-cli 1.8.1" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-08-17" "todo-sqlite-cli 1.9.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -194,6 +194,63 @@ Export active + partial + pending tasks. Flags:
 ndjson emits one task per line for streaming),
 .B \-\-verbose
 (heading-per-field markdown; default is terse).
+.TP
+.B cfd
+Cumulative flow diagram data: per-bucket
+.IR backlog / in_progress / done / rejected
+counts, reconstructed purely from
+.IR created_at ", " started_at ", and " completed_at
+\(em no new schema, no snapshotting required. Flags:
+.B \-\-since \fIDATE\fR
+(inclusive lower bound; defaults to the earliest
+.IR created_at ),
+.B \-\-until \fIDATE\fR
+(inclusive upper bound; defaults to today),
+.B \-\-bucket day|week
+(default
+.IR day ;
+the bucket list always ends exactly on
+.B \-\-until
+even when the step doesn't land on it),
+.B \-\-format ascii|csv|json
+(default
+.IR ascii ;
+.B json
+shape is
+.IR "{\(dqbuckets\(dq: [{\(dqdate\(dq: \(dq...\(dq, \(dqbacklog\(dq: N, \(dqin_progress\(dq: N, \(dqdone\(dq: N, \(dqrejected\(dq: N}, ...]}" ).
+.PP
+Caveat: a task that was
+.BR start ed,
+then
+.BR revert ed
+(clearing
+.IR started_at ),
+under-counts its historical in-progress time \(em
+.B cfd
+can only see the current state of
+.IR started_at ,
+not past work episodes that were discarded.
+.TP
+.B aging
+List open tasks (pending, partial, in-progress), oldest
+.I created_at
+first, for spotting backlog items that have aged unnoticed \(em e.g. ahead
+of a weekly rebase. Read-only: does not change
+.I priority
+or the ordering used by
+.BR next / list .
+Flags:
+.B \-\-stale-days \fIN\fR
+(flag tasks with age in whole days
+.RI \(>=
+.I N
+as
+.IR stale ),
+.B \-\-tag \fITAG\fR
+(repeatable; AND together).
+Pair with
+.B "edit \-\-priority"
+to act on what it surfaces.
 .SH STATUSES
 .TP
 .B pending
@@ -317,6 +374,14 @@ Export the completed log for a date range:
 .RS
 .nf
 todo-sqlite-cli export-completed --since 2026-05-01 --until 2026-06-01
+.fi
+.RE
+.PP
+Eyeball weekly backlog trend and flag tasks aging past two weeks unnoticed:
+.RS
+.nf
+todo-sqlite-cli cfd --bucket week
+todo-sqlite-cli aging --stale-days 14
 .fi
 .RE
 .SH EXIT CODES
