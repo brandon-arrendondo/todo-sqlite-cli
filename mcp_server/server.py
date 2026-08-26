@@ -190,8 +190,8 @@ def done_task(id: int, rejected: bool = False) -> str:
 def edit_task(
     id: int,
     title: str | None = None,
-    details: str | None = None,
     append_details: str | None = None,
+    details: str | None = None,
     clear_details: bool = False,
     priority: int | None = None,
     add_tags: list[str] | None = None,
@@ -202,15 +202,19 @@ def edit_task(
     """Edit an existing task. Returns the updated task as JSON.
 
     Provide one or more fields to change; omitted fields are left as-is.
-    details replaces the existing body; append_details appends with a newline.
+
+    For progress notes, use append_details — it adds text to the existing
+    body with a newline separator, preserving prior context. Use details
+    only when you actually want to REPLACE the entire body (it discards
+    whatever was there before).
     """
     args = ["edit", str(id)]
     if title:
         args += ["--title", title]
-    if details:
-        args += ["--details", details]
     if append_details:
         args += ["--append-details", append_details]
+    if details:
+        args += ["--details", details]
     if clear_details:
         args.append("--clear-details")
     if priority is not None:

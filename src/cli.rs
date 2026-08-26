@@ -176,12 +176,12 @@ pub enum Command {
         /// New title.
         #[arg(long)]
         title: Option<String>,
-        /// New details body (replaces any existing details).
-        #[arg(long)]
-        details: Option<String>,
-        /// Append text to the existing details, separated by a newline. Useful for incremental progress notes.
+        /// Append text to the existing details, separated by a newline. Use this for incremental progress notes — it preserves prior context.
         #[arg(long, value_name = "TEXT")]
         append_details: Option<String>,
+        /// REPLACES the entire details body, discarding whatever was there before. For a progress note, use --append-details instead.
+        #[arg(long)]
+        details: Option<String>,
         /// Clear the details field.
         #[arg(long)]
         clear_details: bool,
