@@ -270,4 +270,51 @@ pub enum Command {
         #[arg(long)]
         verbose: bool,
     },
+
+    /// Merge two databases (optionally against a common-ancestor --base for
+    /// a real 3-way merge). New tasks union in; tasks known to --base are
+    /// reconciled per-field, preferring the changed side, or --ours on a
+    /// genuine same-field conflict (which gets tagged `merge-conflict` for
+    /// review). Without --base, every overlapping id is treated as an
+    /// unrelated task and --theirs' copy is renumbered.
+    Merge {
+        /// Common-ancestor database. Omit for a 2-way union merge.
+        #[arg(long, value_name = "PATH")]
+        base: Option<PathBuf>,
+        /// "Our" database — wins ties and unresolved same-field conflicts.
+        #[arg(long, value_name = "PATH", required = true)]
+        ours: PathBuf,
+        /// "Their" database to merge in.
+        #[arg(long, value_name = "PATH", required = true)]
+        theirs: PathBuf,
+        /// Where to write the merged database. Defaults to overwriting --ours in place.
+        #[arg(long, value_name = "PATH")]
+        into: Option<PathBuf>,
+        /// Abort (exit 1, write nothing) if any hard conflict is found, instead of
+        /// auto-resolving with --ours and tagging it `merge-conflict`.
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Implements git's `merge.<driver>.driver = ... %O %A %B` contract for
+    /// use as a registered merge driver (see `install-merge-driver`). Not
+    /// usually invoked by hand.
+    GitMergeDriver {
+        /// %O — common-ancestor temp file (may be empty/missing).
+        base: PathBuf,
+        /// %A — "ours" temp file; the merge result is written back here.
+        ours: PathBuf,
+        /// %B — "theirs" temp file.
+        theirs: PathBuf,
+    },
+
+    /// One-time setup: registers this binary as the git merge driver for the
+    /// resolved database (adds a `.gitattributes` line + repo-local git
+    /// config), so `git merge`/`pull`/`rebase` resolves DB conflicts
+    /// automatically instead of leaving a binary conflict.
+    InstallMergeDriver {
+        /// Print what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }

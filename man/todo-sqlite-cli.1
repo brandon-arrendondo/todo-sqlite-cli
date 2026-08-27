@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-08-17" "todo-sqlite-cli 2.0.0" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 2.1.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -376,11 +376,86 @@ marker's directory, exactly like git finds
 Otherwise the command exits with status 1 and a hint pointing at
 .BR "todo-sqlite-cli init" .
 .PP
-The DB file should not be checked into git; the marker file can be.
 Multiple repositories can point at the same DB file by writing the same
 absolute path in each repo's
 .I .todo-sqlite-cli
 marker.
+.PP
+The DB file can be checked into git like any other file \(em many projects
+want the historical record of tasks and completions that gives them. Doing
+so with multiple contributors (or multiple agent nodes) means concurrent
+edits will occasionally collide as a binary conflict; see
+.B MERGING
+below for a merge driver that resolves that automatically.
+.SH MERGING
+Because the database is opaque SQLite, git cannot text-merge it: two
+branches that both touched the file produce a binary conflict that
+normally has to be resolved by hand, picking one side and losing the
+other's edits.
+.B todo-sqlite-cli
+ships a real three-way merge engine plus a git merge driver so this
+resolves automatically in the common case.
+.TP
+.B install-merge-driver \fR[\fB\-\-dry-run\fR]
+One-time setup: adds a
+.I merge=todo-sqlite-cli
+line to
+.I .gitattributes
+for the resolved database (tracked \(em share it with collaborators) and
+registers
+.B merge.todo-sqlite-cli.driver
+in the repo-local git config (local only \(em each collaborator runs this
+once). After this,
+.BR "git merge" / pull / rebase
+call the driver automatically on a conflicting database file instead of
+leaving a binary conflict.
+.TP
+.B merge \fB\-\-ours \fIPATH\fB \-\-theirs \fIPATH\fR [\fB\-\-base \fIPATH\fR] [\fB\-\-into \fIPATH\fR] [\fB\-\-strict\fR]
+Manual/ad-hoc merge of two databases, for when you'd rather run it by hand
+than rely on the git driver.
+.B \-\-base
+(the common ancestor) enables a real three-way merge: a task known to
+.B \-\-base
+is reconciled per-field, preferring whichever side changed it (or
+.B \-\-ours
+on a genuine same-field clash, e.g. both sides gave a task a different
+title); a task new to both sides sharing an id is treated as two unrelated
+tasks and the
+.B \-\-theirs
+copy is renumbered. Without
+.BR \-\-base ,
+every overlapping id is treated as an unrelated-task collision (nothing is
+field-merged) \(em a safe fallback, but only use it when you don't have the
+ancestor available.
+.B \-\-into
+defaults to overwriting
+.B \-\-ours
+in place.
+.B \-\-strict
+aborts (exit 1, nothing written) on the first genuine conflict instead of
+auto-resolving and flagging it.
+.PP
+Tags, priority, and dependency edges union or auto-resolve without ever
+being flagged. A genuine conflict \(em both sides changed the same field to
+different values in a way that can't be ranked (title, or the rare
+diverging
+.B is_gate
+flip) \(em keeps
+.B \-\-ours
+and tags the task
+.B merge-conflict
+so it surfaces via
+.B "list \-\-tag merge-conflict"
+for manual resolution with
+.BR edit .
+A task deleted on one side but modified on the other keeps the modified
+version and is flagged the same way, so edits are never silently lost to a
+deletion race.
+.TP
+.B git-merge-driver \fIBASE OURS THEIRS\fR
+Implements git's
+.I "merge.<driver>.driver = ... %O %A %B"
+contract directly \(em not normally invoked by hand.
 .SH FILES
 .TP
 .I .todo-sqlite-cli

@@ -1,6 +1,6 @@
 [package]
 name = "todo-sqlite-cli"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Per-project TODO list CLI backed by SQLite, designed for coding agents"

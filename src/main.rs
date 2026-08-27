@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod format;
+mod merge;
 mod resolve;
 
 use std::process::ExitCode;
@@ -30,6 +31,29 @@ fn dispatch(cli: Cli) -> CliResult<()> {
     match cli.command {
         Command::Init { marker_dir } => commands::init::run(db_flag, marker_dir.as_deref(), json),
 
+        Command::Merge {
+            base,
+            ours,
+            theirs,
+            into,
+            strict,
+        } => commands::merge::run(
+            json,
+            base.as_deref(),
+            &ours,
+            &theirs,
+            into.as_deref(),
+            strict,
+        ),
+
+        Command::GitMergeDriver { base, ours, theirs } => {
+            commands::git_merge_driver::run(&base, &ours, &theirs)
+        }
+
+        Command::InstallMergeDriver { dry_run } => {
+            commands::install_merge_driver::run(db_flag, dry_run)
+        }
+
         other => {
             let db_path = resolve::resolve_db_path(db_flag)?;
             run_command(other, &db_path, json)
@@ -40,6 +64,9 @@ fn dispatch(cli: Cli) -> CliResult<()> {
 fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult<()> {
     match cmd {
         Command::Init { .. } => unreachable!("Init handled upstream"),
+        Command::Merge { .. } => unreachable!("Merge handled upstream"),
+        Command::GitMergeDriver { .. } => unreachable!("GitMergeDriver handled upstream"),
+        Command::InstallMergeDriver { .. } => unreachable!("InstallMergeDriver handled upstream"),
         Command::Add {
             title,
             details,

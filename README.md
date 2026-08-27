@@ -74,6 +74,39 @@ listing it but never marks it `stale`, since indefinite openness is the
 correct state for a gate, not backlog rot; `list`/`show`/`export-todo`
 prefix `[GATE]` before its title.
 
+## Merging
+
+The DB can be checked into git like any other file — many projects want the
+historical record of tasks and completions that gives them. With multiple
+contributors (or multiple agent nodes on the same repo) that means
+concurrent edits occasionally collide as a binary conflict, since git can't
+text-merge opaque SQLite. `todo-sqlite-cli` ships a real three-way merge
+engine plus a git merge driver so that resolves automatically instead of
+being a manual pick-one-side-and-lose-the-other's-work conflict.
+
+```
+$ todo-sqlite-cli install-merge-driver   # one-time, per clone
+```
+
+That adds `<db> merge=todo-sqlite-cli` to `.gitattributes` (tracked — share
+it) and registers the driver in local git config (each collaborator runs
+this once). After that, `git merge`/`pull`/`rebase` just resolves the file:
+a task only one side touched keeps that side's change; tags/deps union;
+status picks whichever side is further along (`done`/`rejected` beat
+`in-progress`/`partial` beat `pending`); a genuine same-field clash (e.g.
+both sides gave a task a different title) keeps the current branch's value
+and tags the task `merge-conflict` for a quick manual look:
+
+```
+$ todo-sqlite-cli list --tag merge-conflict
+```
+
+No driver installed, or merging two databases by hand? `merge --ours
+--theirs [--base] [--into]` does the same thing on demand — pass `--base`
+(the common-ancestor db, e.g. from `git show <merge-base>:path/to.db`) for
+a real three-way merge; without it, every overlapping task id is treated as
+an unrelated collision and renumbered rather than field-merged.
+
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the
