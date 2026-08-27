@@ -24,7 +24,24 @@ pub fn run(base: &Path, ours: &Path, theirs: &Path) -> CliResult<()> {
         )));
     }
 
-    let base_conn = if base.exists() && base.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+    let base_present = base.exists() && base.metadata().map(|m| m.len() > 0).unwrap_or(false);
+
+    // Peek schema versions *before* opening anything for real — see
+    // `db::require_matching_schema_versions` for why.
+    db::require_matching_schema_versions(&[
+        ("ours", db::peek_schema_version(ours)?),
+        ("theirs", db::peek_schema_version(theirs)?),
+        (
+            "base",
+            if base_present {
+                db::peek_schema_version(base)?
+            } else {
+                None
+            },
+        ),
+    ])?;
+
+    let base_conn = if base_present {
         Some(db::open(base)?)
     } else {
         None

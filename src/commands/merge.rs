@@ -28,8 +28,23 @@ pub fn run(
         )));
     }
 
+    let base_usable = base.is_some_and(|p| is_usable_db(p));
+
+    db::require_matching_schema_versions(&[
+        ("ours", db::peek_schema_version(ours)?),
+        ("theirs", db::peek_schema_version(theirs)?),
+        (
+            "base",
+            if base_usable {
+                db::peek_schema_version(base.unwrap())?
+            } else {
+                None
+            },
+        ),
+    ])?;
+
     let base_conn = match base {
-        Some(p) if is_usable_db(p) => Some(db::open(p)?),
+        Some(p) if base_usable => Some(db::open(p)?),
         _ => None,
     };
     let ours_conn = db::open(ours)?;

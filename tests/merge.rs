@@ -528,3 +528,90 @@ fn missing_ours_file_is_a_user_error() {
     assert!(!out.status.success());
     assert!(predicate::str::contains("not found").eval(&String::from_utf8_lossy(&out.stderr)));
 }
+
+/// Reproduces the CORRUPTION_LOG.md incident: `ours` is still on an old
+/// schema (no uuid column) while `theirs` has already been migrated to the
+/// current one. Merging must refuse outright rather than silently
+/// migrating `ours` mid-merge — that migration mints fresh, uncorrelated
+/// uuids for every pre-existing row, and the merge would then union by
+/// uuid and duplicate the entire backlog instead of reconciling it.
+#[test]
+fn refuses_to_merge_across_mismatched_schema_versions() {
+    let fx = MergeFixture::new();
+
+    // `theirs`: a normal, fully-migrated db with one pre-existing task.
+    let theirs = fx.init("theirs.db");
+    fx.add(&theirs, &["shared task"]);
+
+    // `ours`: hand-crafted at schema v4 (pre-uuid-as-primary-key), with a
+    // row that's logically the *same* task but has no uuid yet.
+    let ours = fx.path("ours.db");
+    {
+        let conn = rusqlite::Connection::open(&ours).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE tasks (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                title        TEXT NOT NULL,
+                details      TEXT,
+                status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done','rejected')),
+                priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+                is_gate      INTEGER NOT NULL DEFAULT 0 CHECK(is_gate IN (0,1)),
+                created_at   TEXT NOT NULL,
+                started_at   TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE tags (
+                task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                tag     TEXT NOT NULL,
+                PRIMARY KEY (task_id, tag)
+            );
+            CREATE TABLE deps (
+                task_id         INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                depends_on_id   INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                PRIMARY KEY (task_id, depends_on_id)
+            );
+            CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO tasks(id, title, details, status, priority, created_at)
+                VALUES (1, 'shared task', NULL, 'pending', 3, '2026-01-01T00:00:00Z');
+            INSERT INTO meta(key, value) VALUES ('schema_version', '4');
+            "#,
+        )
+        .unwrap();
+    }
+
+    let out = fx.run(&[
+        "--ours",
+        ours.to_str().unwrap(),
+        "--theirs",
+        theirs.to_str().unwrap(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "merge across mismatched schema versions must be refused"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("schema versions differ"),
+        "stderr: {stderr:?}"
+    );
+
+    // Crucially, `ours` must be untouched — no auto-migration, no
+    // duplication.
+    let conn = rusqlite::Connection::open(&ours).unwrap();
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "4", "ours must not have been auto-migrated");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "ours must not have gained duplicate rows");
+}

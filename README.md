@@ -117,6 +117,20 @@ $ todo-sqlite-cli doctor
 $ todo-sqlite-cli renumber 3f9c1e2a-... 42
 ```
 
+If a node's local database has been sitting untouched across a schema
+upgrade (e.g. it was cloned or created long ago and no command has run
+against it since), don't let the merge driver be the first thing to touch
+it. Migrating a database mid-merge is unsafe when the other side is already
+on a newer schema — some migrations mint a fresh uuid for every pre-existing
+row with no way to recognize "this row on the old side is the same task as
+that row on the new side," so a subsequent uuid-based merge would union them
+as unrelated tasks and duplicate the whole backlog. The merge driver detects
+this (comparing schema versions before opening anything) and refuses with an
+error rather than merging silently. Fix it by running any command (e.g.
+`doctor`) against the stale local database on its own, *before* pulling —
+that migrates it deterministically against a pristine copy — then retry the
+pull/merge.
+
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the
