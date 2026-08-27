@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 2.1.0" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 2.2.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -99,7 +99,11 @@ before the title of a gate task),
 (default
 .IR all ;
 .B gate
-gives a readiness dashboard of every open checkpoint and what it's blocking).
+gives a readiness dashboard of every open checkpoint and what it's blocking),
+.B \-\-unblocked
+(only show tasks with no unmet dependencies; every task also carries a
+.B blocked
+boolean in json/ndjson output).
 .TP
 .B next
 Print the single task to work on next. Returns the oldest in-progress task,
@@ -515,6 +519,13 @@ Stream tasks into a pipeline without unwrapping a JSON envelope:
 .nf
 todo-sqlite-cli list --format ndjson | jq -c 'select(.priority == 1)'
 todo-sqlite-cli export-completed --format ndjson | wc -l
+.fi
+.RE
+.PP
+List only unblocked work (no unmet dependencies):
+.RS
+.nf
+todo-sqlite-cli list --unblocked
 .fi
 .RE
 .PP

@@ -41,6 +41,7 @@ def list_tasks(
     tags: list[str] | None = None,
     limit: int | None = None,
     since: str | None = None,
+    unblocked: bool = False,
 ) -> str:
     """List tasks as JSON.
 
@@ -48,6 +49,7 @@ def list_tasks(
     tags: filter to tasks carrying ALL listed tags
     limit: cap number of rows
     since: only tasks with created_at >= DATE (YYYY-MM-DD or RFC3339)
+    unblocked: only include tasks with no unmet dependencies
 
     Returns {"tasks": [...]} JSON.
     """
@@ -58,6 +60,8 @@ def list_tasks(
         args += ["--limit", str(limit)]
     if since:
         args += ["--since", since]
+    if unblocked:
+        args += ["--unblocked"]
     return _run(*args)
 
 

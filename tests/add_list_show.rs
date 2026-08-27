@@ -78,6 +78,32 @@ fn list_ndjson_emits_one_object_per_line_no_wrapper() {
 }
 
 #[test]
+fn list_unblocked_excludes_tasks_with_unmet_deps() {
+    let sb = Sandbox::new();
+    let dep = sb.add("dep");
+    let blocked = sb.add("blocked");
+    let free = sb.add("free");
+    sb.cmd()
+        .args(["edit", &blocked.to_string(), "--add-dep", &dep.to_string()])
+        .assert()
+        .success();
+
+    let out = sb
+        .cmd()
+        .args(["list", "--unblocked", "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ids: Vec<i64> = v["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![dep, free]);
+}
+
+#[test]
 fn list_explicit_ndjson_format_wins_over_json_flag() {
     // `--format ndjson` is more specific than the global `--json`; verify the
     // user-visible contract from the recommendation: explicit format wins.

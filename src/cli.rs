@@ -121,6 +121,9 @@ pub enum Command {
         /// Filter by kind: gate | task | all. `gate` gives a readiness dashboard of open checkpoints.
         #[arg(long, default_value = "all")]
         kind: String,
+        /// Only show tasks with no unmet dependencies.
+        #[arg(long)]
+        unblocked: bool,
     },
 
     /// Print the single task to work on next. Order: oldest in-progress, then oldest unblocked partial, then highest-priority unblocked pending. Skips tasks with unmet deps.

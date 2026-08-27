@@ -95,6 +95,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             ids_only,
             verbose,
             kind,
+            unblocked,
         } => commands::list::run(
             db_path,
             json,
@@ -106,6 +107,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             ids_only,
             verbose,
             &kind,
+            unblocked,
         ),
         Command::Next => commands::next::run(db_path, json),
         Command::Start { id, force } => commands::start::run(db_path, json, id, force),

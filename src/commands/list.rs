@@ -19,6 +19,7 @@ pub fn run(
     ids_only: bool,
     verbose: bool,
     kind: &str,
+    unblocked: bool,
 ) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -60,6 +61,10 @@ pub fn run(
         t.tags = db::load_tags(&conn, t.id)?;
         t.depends_on = db::load_deps(&conn, t.id)?;
         t.blocked = db::is_blocked(&conn, t.id)?;
+    }
+
+    if unblocked {
+        tasks.retain(|t| !t.blocked);
     }
 
     if ids_only {
