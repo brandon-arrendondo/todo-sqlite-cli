@@ -107,6 +107,16 @@ No driver installed, or merging two databases by hand? `merge --ours
 a real three-way merge; without it, every overlapping task id is treated as
 an unrelated collision and renumbered rather than field-merged.
 
+A merge can leave two unrelated tasks sharing the same display id (identity
+is each task's uuid, so nothing is lost — `show <id>` just lists both).
+Run `doctor` to spot these, then `renumber <uuid> <new-id>` to give one of
+them a fresh id:
+
+```
+$ todo-sqlite-cli doctor
+$ todo-sqlite-cli renumber 3f9c1e2a-... 42
+```
+
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the

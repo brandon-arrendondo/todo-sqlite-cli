@@ -149,6 +149,9 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             gate,
             no_gate,
         ),
+        Command::Renumber { id, new_id, force } => {
+            commands::renumber::run(db_path, json, &id, new_id, force)
+        }
         Command::Rm { id } => commands::rm::run(db_path, json, &id),
         Command::ExportCompleted {
             since,

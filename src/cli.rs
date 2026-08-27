@@ -212,6 +212,24 @@ pub enum Command {
         no_gate: bool,
     },
 
+    /// Reassign a task's display id — for resolving a duplicate id left by a
+    /// merge (see `doctor`). Identity (the uuid) is unchanged, and
+    /// dependency edges are stored by uuid internally, so dependents keep
+    /// resolving correctly.
+    Renumber {
+        /// Task ID (or full UUID) to renumber. A plain id that matches more
+        /// than one task (the conflict this command exists to fix) is
+        /// rejected as ambiguous — pass the full uuid shown by `doctor` or
+        /// `show` to pick one.
+        id: String,
+        /// New display id to assign (must be a positive integer).
+        new_id: i64,
+        /// Allow assigning a display id already in use by another task,
+        /// leaving both sharing it.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Delete a task. Cascades to associated tags and dependency edges.
     /// The display ID is not reserved after deletion — a later `add` may
     /// reuse it if it was the highest one in use (identity is the task's

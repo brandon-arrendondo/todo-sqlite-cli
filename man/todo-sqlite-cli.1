@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 3.0.0" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 3.1.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -195,6 +195,33 @@ and
 .TP
 .B rm \fIID\fR
 Delete a task. Cascades to associated tags and dependency edges.
+.TP
+.B renumber \fIID\fR \fINEW_ID\fR \fR[\fB\-\-force\fR]
+Reassign a task's display id \(em for resolving a duplicate id left by a
+merge (see
+.BR doctor ).
+Identity (the uuid) is unchanged, and dependency edges are stored by uuid
+internally, so dependents keep resolving correctly.
+.I ID
+must be unambiguous: a plain id matching more than one task (the conflict
+this command exists to fix) is rejected \(em pass the full uuid shown by
+.B doctor
+or
+.B show
+to pick one.
+.B \-\-force
+allows assigning a display id already in use by another task, leaving both
+sharing it; without it, that case is a user error.
+.TP
+.B doctor
+Post-merge (and general) sanity checks: duplicate display ids, unresolved
+.I merge-conflict
+tags, orphaned tag/dep rows, self-deps, and dependency cycles. Read-only.
+Exits 1 if anything is found so it can gate a script (e.g. after
+.BR "git merge" / pull ).
+A duplicate display id is expected occasionally after a merge and is not
+itself corruption (identity is the uuid); resolve one with
+.BR renumber .
 .TP
 .B export-completed
 Export completed tasks. Default shape is

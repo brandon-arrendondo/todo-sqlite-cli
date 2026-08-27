@@ -12,6 +12,7 @@ pub mod install_merge_driver;
 pub mod list;
 pub mod merge;
 pub mod next;
+pub mod renumber;
 pub mod revert;
 pub mod rm;
 pub mod show;
