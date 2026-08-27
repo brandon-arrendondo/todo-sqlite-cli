@@ -6,7 +6,7 @@ use crate::db::{self, Status};
 use crate::error::{system, user, CliResult};
 use crate::format;
 
-pub fn run(db_path: &Path, json: bool, id: i64) -> CliResult<()> {
+pub fn run(db_path: &Path, json: bool, id: &str) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -14,30 +14,26 @@ pub fn run(db_path: &Path, json: bool, id: i64) -> CliResult<()> {
         ));
     }
 
-    let current: Option<String> = conn
-        .query_row("SELECT status FROM tasks WHERE id = ?1", params![id], |r| {
-            r.get(0)
-        })
-        .ok();
-    let current = current.ok_or_else(|| user(format!("task {id} not found")))?;
+    let target = db::resolve_one(&conn, id)?;
+    let display_id = target.id;
 
-    if current == Status::Done.as_str() {
-        return Err(user(format!("task {id} is done; cannot stop")));
+    if target.status == Status::Done.as_str() {
+        return Err(user(format!("task {display_id} is done; cannot stop")));
     }
 
-    if current == Status::InProgress.as_str() {
+    if target.status == Status::InProgress.as_str() {
         conn.execute(
-            "UPDATE tasks SET status = 'partial' WHERE id = ?1",
-            params![id],
+            "UPDATE tasks SET status = 'partial' WHERE uuid = ?1",
+            params![target.uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
 
-    let t = db::load_task(&conn, id)?;
+    let t = db::load_task_by_uuid(&conn, &target.uuid)?;
     if json {
         format::print_task_json(&t);
     } else {
-        println!("stopped {id}");
+        println!("stopped {display_id}");
     }
     Ok(())
 }

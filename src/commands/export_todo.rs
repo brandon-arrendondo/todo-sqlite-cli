@@ -13,33 +13,19 @@ pub fn run(db_path: &Path, _json_flag: bool, fmt: &str, verbose: bool) -> CliRes
     }
 
     let mut stmt = conn
-        .prepare(
-            "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at \
+        .prepare(&format!(
+            "SELECT {} \
              FROM tasks WHERE status IN ('in-progress','partial','pending') \
              ORDER BY CASE status \
                        WHEN 'in-progress' THEN 0 \
                        WHEN 'partial' THEN 1 \
                        WHEN 'pending' THEN 2 END, \
                       priority ASC, created_at ASC, id ASC",
-        )
+            db::TASK_COLUMNS
+        ))
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                details: row.get(2)?,
-                status: row.get(3)?,
-                priority: row.get(4)?,
-                is_gate: row.get(5)?,
-                tags: Vec::new(),
-                depends_on: Vec::new(),
-                blocked: false,
-                created_at: row.get(6)?,
-                started_at: row.get(7)?,
-                completed_at: row.get(8)?,
-            })
-        })
+        .query_map([], db::row_to_task_base)
         .map_err(|e| system(format!("query failed: {e}")))?;
 
     let mut tasks: Vec<Task> = Vec::new();
@@ -47,9 +33,9 @@ pub fn run(db_path: &Path, _json_flag: bool, fmt: &str, verbose: bool) -> CliRes
         tasks.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
     }
     for t in tasks.iter_mut() {
-        t.tags = db::load_tags(&conn, t.id)?;
-        t.depends_on = db::load_deps(&conn, t.id)?;
-        t.blocked = db::is_blocked(&conn, t.id)?;
+        t.tags = db::load_tags(&conn, &t.uuid)?;
+        t.depends_on = db::load_deps(&conn, &t.uuid)?;
+        t.blocked = db::is_blocked(&conn, &t.uuid)?;
     }
 
     match fmt {

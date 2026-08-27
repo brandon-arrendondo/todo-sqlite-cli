@@ -14,7 +14,7 @@ pub fn run(
     details: Option<&str>,
     tags: &[String],
     priority: i64,
-    depends_on: &[i64],
+    depends_on: &[String],
     start: bool,
     gate: bool,
 ) -> CliResult<()> {
@@ -28,8 +28,11 @@ pub fn run(
         ));
     }
 
+    let mut dep_uuids = Vec::new();
     for dep_id in depends_on {
-        db::require_task_exists(&conn, *dep_id)?;
+        let dep = db::resolve_one(&conn, dep_id)
+            .map_err(|e| user(format!("dependency {dep_id}: {e}")))?;
+        dep_uuids.push(dep.uuid);
     }
 
     let tx = conn
@@ -49,10 +52,19 @@ pub fn run(
         (Status::Pending, None)
     };
 
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let id: i64 = tx
+        .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM tasks", [], |r| {
+            r.get(0)
+        })
+        .map_err(|e| system(format!("next id query failed: {e}")))?;
+
     tx.execute(
-        "INSERT INTO tasks(title, details, status, priority, is_gate, created_at, started_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
+            uuid,
+            id,
             title,
             details,
             status.as_str(),
@@ -63,22 +75,18 @@ pub fn run(
         ],
     )
     .map_err(|e| system(format!("insert failed: {e}")))?;
-    let id = tx.last_insert_rowid();
 
     for tag in dedup(tags) {
         tx.execute(
-            "INSERT OR IGNORE INTO tags(task_id, tag) VALUES(?1, ?2)",
-            params![id, tag],
+            "INSERT OR IGNORE INTO tags(task_uuid, tag) VALUES(?1, ?2)",
+            params![uuid, tag],
         )
         .map_err(|e| system(format!("tag insert failed: {e}")))?;
     }
-    for dep in dedup_i64(depends_on) {
-        if dep == id {
-            return Err(user("a task cannot depend on itself"));
-        }
+    for dep in dedup(&dep_uuids) {
         tx.execute(
-            "INSERT OR IGNORE INTO deps(task_id, depends_on_id) VALUES(?1, ?2)",
-            params![id, dep],
+            "INSERT OR IGNORE INTO deps(task_uuid, depends_on_uuid) VALUES(?1, ?2)",
+            params![uuid, dep],
         )
         .map_err(|e| system(format!("dep insert failed: {e}")))?;
     }
@@ -86,7 +94,7 @@ pub fn run(
     tx.commit()
         .map_err(|e| system(format!("commit failed: {e}")))?;
 
-    let task = db::load_task(&conn, id)?;
+    let task = db::load_task_by_uuid(&conn, &uuid)?;
     if json {
         println!(
             "{}",
@@ -104,17 +112,6 @@ fn dedup(v: &[String]) -> Vec<String> {
     for s in v {
         if seen.insert(s.clone()) {
             out.push(s.clone());
-        }
-    }
-    out
-}
-
-fn dedup_i64(v: &[i64]) -> Vec<i64> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for s in v {
-        if seen.insert(*s) {
-            out.push(*s);
         }
     }
     out

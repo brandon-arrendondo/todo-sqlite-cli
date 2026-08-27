@@ -89,6 +89,9 @@ fn gate_prefix(task: &Task) -> &'static str {
 
 pub fn print_task_text(task: &Task, verbose: bool) {
     println!("Task ID: {}", task.id);
+    if verbose {
+        println!("UUID: {}", task.uuid);
+    }
     println!("Title: {}{}", gate_prefix(task), task.title);
     if verbose || task.status != DEFAULT_STATUS {
         println!("Status: {}", task.status);

@@ -88,7 +88,6 @@ fn print_report(json: bool, report: &MergeReport, out_path: &Path) {
         let v = json!({
             "into": out_path.display().to_string(),
             "tasks_total": report.tasks_total,
-            "renumbered": report.renumbered,
             "auto_resolved": report.auto_resolved,
             "conflicts": report.conflicts,
         });
@@ -97,12 +96,6 @@ fn print_report(json: bool, report: &MergeReport, out_path: &Path) {
     }
     println!("merged into {}", out_path.display());
     println!("tasks: {}", report.tasks_total);
-    if report.renumbered > 0 {
-        println!(
-            "renumbered (id collisions on new tasks): {}",
-            report.renumbered
-        );
-    }
     if report.auto_resolved > 0 {
         println!("auto-resolved (no review needed): {}", report.auto_resolved);
     }

@@ -67,6 +67,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
         Command::Merge { .. } => unreachable!("Merge handled upstream"),
         Command::GitMergeDriver { .. } => unreachable!("GitMergeDriver handled upstream"),
         Command::InstallMergeDriver { .. } => unreachable!("InstallMergeDriver handled upstream"),
+        Command::Doctor => commands::doctor::run(db_path, json),
         Command::Add {
             title,
             details,
@@ -110,15 +111,15 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             unblocked,
         ),
         Command::Next => commands::next::run(db_path, json),
-        Command::Start { id, force } => commands::start::run(db_path, json, id, force),
-        Command::Stop { id } => commands::stop::run(db_path, json, id),
-        Command::Revert { id } => commands::revert::run(db_path, json, id),
-        Command::Done { id, rejected } => commands::done::run(db_path, json, id, rejected),
+        Command::Start { id, force } => commands::start::run(db_path, json, &id, force),
+        Command::Stop { id } => commands::stop::run(db_path, json, &id),
+        Command::Revert { id } => commands::revert::run(db_path, json, &id),
+        Command::Done { id, rejected } => commands::done::run(db_path, json, &id, rejected),
         Command::Show {
             id,
             verbose,
             format,
-        } => commands::show::run(db_path, json, id, verbose, &format),
+        } => commands::show::run(db_path, json, &id, verbose, &format),
         Command::Edit {
             id,
             title,
@@ -135,7 +136,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
         } => commands::edit::run(
             db_path,
             json,
-            id,
+            &id,
             title.as_deref(),
             details.as_deref(),
             append_details.as_deref(),
@@ -148,7 +149,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             gate,
             no_gate,
         ),
-        Command::Rm { id } => commands::rm::run(db_path, json, id),
+        Command::Rm { id } => commands::rm::run(db_path, json, &id),
         Command::ExportCompleted {
             since,
             until,

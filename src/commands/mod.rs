@@ -1,6 +1,7 @@
 pub mod add;
 pub mod aging;
 pub mod cfd;
+pub mod doctor;
 pub mod done;
 pub mod edit;
 pub mod export_completed;

@@ -20,9 +20,9 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     // from every tier below rather than surfacing one.
 
     // 1. Oldest in-progress
-    let id: Option<i64> = conn
+    let winner: Option<String> = conn
         .query_row(
-            "SELECT id FROM tasks WHERE status = 'in-progress' AND is_gate = 0 \
+            "SELECT uuid FROM tasks WHERE status = 'in-progress' AND is_gate = 0 \
              ORDER BY started_at ASC, id ASC LIMIT 1",
             [],
             |r| r.get(0),
@@ -30,16 +30,16 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
         .ok();
 
     // 2. Highest-priority partial that is not blocked (resume paused work first)
-    let id = match id {
+    let winner = match winner {
         Some(v) => Some(v),
         None => conn
             .query_row(
-                "SELECT id FROM tasks t \
+                "SELECT uuid FROM tasks t \
                  WHERE status = 'partial' AND is_gate = 0 \
                    AND NOT EXISTS (\
                      SELECT 1 FROM deps d \
-                     JOIN tasks td ON td.id = d.depends_on_id \
-                     WHERE d.task_id = t.id AND td.status <> 'done'\
+                     JOIN tasks td ON td.uuid = d.depends_on_uuid \
+                     WHERE d.task_uuid = t.uuid AND td.status <> 'done'\
                    ) \
                  ORDER BY priority ASC, started_at ASC, id ASC LIMIT 1",
                 [],
@@ -49,16 +49,16 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     };
 
     // 3. Highest-priority pending that is not blocked
-    let id = match id {
+    let winner = match winner {
         Some(v) => Some(v),
         None => conn
             .query_row(
-                "SELECT id FROM tasks t \
+                "SELECT uuid FROM tasks t \
                  WHERE status = 'pending' AND is_gate = 0 \
                    AND NOT EXISTS (\
                      SELECT 1 FROM deps d \
-                     JOIN tasks td ON td.id = d.depends_on_id \
-                     WHERE d.task_id = t.id AND td.status <> 'done'\
+                     JOIN tasks td ON td.uuid = d.depends_on_uuid \
+                     WHERE d.task_uuid = t.uuid AND td.status <> 'done'\
                    ) \
                  ORDER BY priority ASC, created_at ASC, id ASC LIMIT 1",
                 [],
@@ -67,9 +67,9 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
             .ok(),
     };
 
-    match id {
-        Some(i) => {
-            let t: Task = db::load_task(&conn, i)?;
+    match winner {
+        Some(u) => {
+            let t: Task = db::load_task_by_uuid(&conn, &u)?;
             if json {
                 format::print_task_json(&t);
             } else {

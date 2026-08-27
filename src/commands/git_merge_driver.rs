@@ -10,7 +10,9 @@ use crate::merge::{merge_databases, MergeOptions};
 /// the `ours` path — that's what git copies into the working tree. `base`
 /// may be missing or empty when there is no common ancestor (e.g. the file
 /// was added independently on both sides); that degrades to a 2-way union
-/// merge with id-collision renumbering instead of a 3-way field merge.
+/// merge instead of a 3-way field merge. Identity is the uuid primary key,
+/// so a task id colliding across nodes is not a merge-time problem — see
+/// `db::resolve_one`.
 pub fn run(base: &Path, ours: &Path, theirs: &Path) -> CliResult<()> {
     if !ours.exists() {
         return Err(user(format!("'ours' file not found: {}", ours.display())));
@@ -57,7 +59,7 @@ pub fn run(base: &Path, ours: &Path, theirs: &Path) -> CliResult<()> {
     println!(
         "todo-sqlite-cli: merged {} task(s), {} conflict(s)",
         report.tasks_total,
-        report.conflicts.len()
+        report.conflicts.len(),
     );
 
     if !report.conflicts.is_empty() {

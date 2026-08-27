@@ -22,9 +22,9 @@ pub fn run(
         ));
     }
 
-    let mut sql = String::from(
-        "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at \
-         FROM tasks WHERE status = 'done'",
+    let mut sql = format!(
+        "SELECT {} FROM tasks WHERE status = 'done'",
+        db::TASK_COLUMNS
     );
     let mut params: Vec<Value> = Vec::new();
     if let Some(s) = since {
@@ -45,22 +45,7 @@ pub fn run(
         .prepare(&sql)
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
-        .query_map(params_from_iter(params.iter()), |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                details: row.get(2)?,
-                status: row.get(3)?,
-                priority: row.get(4)?,
-                is_gate: row.get(5)?,
-                tags: Vec::new(),
-                depends_on: Vec::new(),
-                blocked: false,
-                created_at: row.get(6)?,
-                started_at: row.get(7)?,
-                completed_at: row.get(8)?,
-            })
-        })
+        .query_map(params_from_iter(params.iter()), db::row_to_task_base)
         .map_err(|e| system(format!("query failed: {e}")))?;
 
     let mut tasks: Vec<Task> = Vec::new();
@@ -69,8 +54,8 @@ pub fn run(
         tasks.push(t);
     }
     for t in tasks.iter_mut() {
-        t.tags = db::load_tags(&conn, t.id)?;
-        t.depends_on = db::load_deps(&conn, t.id)?;
+        t.tags = db::load_tags(&conn, &t.uuid)?;
+        t.depends_on = db::load_deps(&conn, &t.uuid)?;
     }
 
     match fmt {

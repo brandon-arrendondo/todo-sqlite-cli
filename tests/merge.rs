@@ -47,6 +47,31 @@ impl MergeFixture {
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
     }
 
+    /// Like `add`, but also returns the new task's uuid (needed once a
+    /// display id can collide and `show <id>` alone can't disambiguate).
+    fn add_with_uuid(&self, db: &Path, args: &[&str]) -> (i64, String) {
+        let mut c = self.cmd(db);
+        c.arg("add").arg("--json");
+        c.args(args);
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "add failed: {:?}", out);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        (
+            v["id"].as_i64().unwrap(),
+            v["task"]["uuid"].as_str().unwrap().to_string(),
+        )
+    }
+
+    fn show_by_uuid(&self, db: &Path, uuid: &str) -> serde_json::Value {
+        let out = self
+            .cmd(db)
+            .args(["show", uuid, "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "show failed: {:?}", out);
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
     fn run(&self, args: &[&str]) -> std::process::Output {
         let mut c = Command::cargo_bin("todo-sqlite-cli").unwrap();
         c.env_remove("TODO_SQLITE_CLI_DB");
@@ -117,7 +142,7 @@ fn one_side_field_changes_both_carry_over() {
 }
 
 #[test]
-fn new_tasks_on_both_sides_union_with_renumbering() {
+fn new_tasks_on_both_sides_keep_their_own_duplicate_display_id() {
     let fx = MergeFixture::new();
     let base = fx.init("base.db");
     fx.add(&base, &["shared task"]);
@@ -125,10 +150,11 @@ fn new_tasks_on_both_sides_union_with_renumbering() {
     let ours = fx.copy(&base, "ours.db");
     let theirs = fx.copy(&base, "theirs.db");
 
-    let ours_new = fx.add(&ours, &["ours-only"]);
-    let theirs_new = fx.add(&theirs, &["theirs-only"]);
-    // Both allocated the same next id independently.
-    assert_eq!(ours_new, theirs_new);
+    let (ours_new_id, ours_new_uuid) = fx.add_with_uuid(&ours, &["ours-only"]);
+    let (theirs_new_id, theirs_new_uuid) = fx.add_with_uuid(&theirs, &["theirs-only"]);
+    // Both allocated the same next display id independently.
+    assert_eq!(ours_new_id, theirs_new_id);
+    assert_ne!(ours_new_uuid, theirs_new_uuid);
 
     let merged = fx.path("merged.db");
     let out = fx.run(&[
@@ -143,17 +169,41 @@ fn new_tasks_on_both_sides_union_with_renumbering() {
     ]);
     assert!(out.status.success(), "merge failed: {:?}", out);
 
+    // A uuid can't collide, so both new tasks survive distinctly — with the
+    // same duplicate display id, since there's nothing to renumber anymore.
     let ids = fx.list_ids(&merged);
     assert_eq!(ids.len(), 3, "expected 3 distinct tasks, got {ids:?}");
-    // ours-only kept its id; theirs-only got renumbered to something new.
-    assert!(ids.contains(&ours_new));
-    let renumbered: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|i| *i != ours_new && *i != 1)
-        .collect();
-    assert_eq!(renumbered.len(), 1);
-    assert_ne!(renumbered[0], ours_new);
+    assert_eq!(
+        ids.iter().filter(|i| **i == ours_new_id).count(),
+        2,
+        "both new tasks should keep display id {ours_new_id}: {ids:?}"
+    );
+
+    // The duplicate id is now ambiguous — `show` must list both rather than
+    // silently picking one, and each full uuid still resolves precisely.
+    let show_out = fx
+        .cmd(&merged)
+        .args(["show", &ours_new_id.to_string()])
+        .output()
+        .unwrap();
+    assert!(!show_out.status.success());
+    let stderr = String::from_utf8_lossy(&show_out.stderr);
+    assert!(stderr.contains("ambiguous"), "stderr: {stderr:?}");
+    assert!(stderr.contains(&ours_new_uuid), "stderr: {stderr:?}");
+    assert!(stderr.contains(&theirs_new_uuid), "stderr: {stderr:?}");
+
+    assert_eq!(
+        fx.show_by_uuid(&merged, &ours_new_uuid)["title"]
+            .as_str()
+            .unwrap(),
+        "ours-only"
+    );
+    assert_eq!(
+        fx.show_by_uuid(&merged, &theirs_new_uuid)["title"]
+            .as_str()
+            .unwrap(),
+        "theirs-only"
+    );
 }
 
 #[test]
@@ -358,11 +408,15 @@ fn strict_mode_aborts_and_writes_nothing_on_conflict() {
 }
 
 #[test]
-fn two_way_merge_without_base_renumbers_all_overlap() {
+fn two_way_merge_without_base_reconciles_shared_uuid_and_unions_new() {
     let fx = MergeFixture::new();
     let base = fx.init("base.db");
     fx.add(&base, &["shared task"]);
 
+    // `a.db`/`b.db` are byte-copies of the same file, so the "shared task"
+    // row has the identical uuid on both sides — a real cross-node
+    // collision is astronomically unlikely, but a shared history without
+    // --base (e.g. two clones of the same db) is exactly this shape.
     let ours = fx.copy(&base, "a.db");
     let theirs = fx.copy(&base, "b.db");
     fx.add(&ours, &["a new"]);
@@ -379,10 +433,10 @@ fn two_way_merge_without_base_renumbers_all_overlap() {
     ]);
     assert!(out.status.success(), "merge failed: {:?}", out);
 
-    // No --base means id 1 in `ours` and id 1 in `theirs` are treated as
-    // unrelated tasks, so nothing is field-merged and everything unions in.
+    // The shared uuid reconciles to one row (not two — a uuid identifies a
+    // single task even without --base); each side's new task unions in.
     let ids = fx.list_ids(&merged);
-    assert_eq!(ids.len(), 4, "ids: {ids:?}");
+    assert_eq!(ids.len(), 3, "ids: {ids:?}");
 }
 
 #[test]

@@ -111,7 +111,7 @@ fn v1_database_migrates_to_v2_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "4");
+    assert_eq!(v, "5");
 
     // Existing data preserved.
     let count: i64 = conn
@@ -175,7 +175,7 @@ fn v2_database_migrates_to_v3_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "4");
+    assert_eq!(v, "5");
 
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
@@ -258,7 +258,7 @@ fn v3_database_migrates_to_v4_on_open() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(v, "4");
+    assert_eq!(v, "5");
 
     // Pre-existing rows default is_gate to 0.
     let is_gate: i64 = conn
@@ -284,7 +284,14 @@ fn v3_database_migrates_to_v4_on_open() {
 }
 
 #[test]
-fn migrated_db_preserves_autoincrement_counter() {
+fn add_after_migration_continues_from_max_existing_id() {
+    // v5 drops AUTOINCREMENT/sqlite_sequence for `id` entirely — it's a
+    // plain, non-unique display id now, allocated as MAX(id)+1 at insert
+    // time. This test replaces the old
+    // `migrated_db_preserves_autoincrement_counter`, which relied on
+    // sqlite_sequence surviving a delete-everything-then-add sequence; that
+    // guarantee no longer exists; what does still hold is that `add`
+    // continues from the highest id actually present after migration.
     let dir = TempDir::new().unwrap();
     let db = dir.path().join("v1.db");
 
@@ -296,7 +303,6 @@ fn migrated_db_preserves_autoincrement_counter() {
             [],
         )
         .unwrap();
-        // Insert and delete to bump sqlite_sequence past 1.
         for i in 1..=3 {
             conn.execute(
                 "INSERT INTO tasks(title, status, priority, created_at) \
@@ -305,7 +311,10 @@ fn migrated_db_preserves_autoincrement_counter() {
             )
             .unwrap();
         }
-        conn.execute("DELETE FROM tasks", []).unwrap();
+        // Delete the highest-id row; a stale AUTOINCREMENT counter would
+        // still hand out id 4 next — MAX(id)+1 must hand out 3 instead.
+        conn.execute("DELETE FROM tasks WHERE title = 't3'", [])
+            .unwrap();
     }
 
     let mut cmd = Command::cargo_bin("todo-sqlite-cli").unwrap();
@@ -314,5 +323,141 @@ fn migrated_db_preserves_autoincrement_counter() {
     let out = cmd.output().unwrap();
     assert!(out.status.success());
     let id: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
-    assert_eq!(id, 4, "AUTOINCREMENT counter must survive migration");
+    assert_eq!(id, 3, "id allocation must be MAX(existing id) + 1");
+}
+
+// Frozen copy of the v4 schema (the shape right before uuid became the
+// primary key) — intentionally not derived from `db.rs`'s current schema,
+// so this fixture stays historically accurate as the schema keeps evolving.
+const V4_SCHEMA: &str = r#"
+CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    details      TEXT,
+    status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done','rejected')),
+    priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+    is_gate      INTEGER NOT NULL DEFAULT 0 CHECK(is_gate IN (0,1)),
+    created_at   TEXT NOT NULL,
+    started_at   TEXT,
+    completed_at TEXT
+);
+CREATE TABLE tags (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (task_id, tag)
+);
+CREATE TABLE deps (
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_id),
+    CHECK (task_id <> depends_on_id)
+);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+CREATE INDEX idx_tags_tag ON tags(tag);
+CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
+"#;
+
+#[test]
+fn v4_database_migrates_to_v5_on_open() {
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("v4.db");
+
+    // Build a v4 DB: two tasks, a tag, and a dep edge, so the migration's
+    // id -> uuid translation of tags/deps can be checked, not just tasks.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(V4_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', '4')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(title, status, priority, is_gate, created_at) \
+             VALUES('blocker', 'pending', 3, 0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(title, status, priority, is_gate, created_at) \
+             VALUES('blocked', 'pending', 3, 0, '2026-01-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO tags(task_id, tag) VALUES(1, 'infra')", [])
+            .unwrap();
+        conn.execute("INSERT INTO deps(task_id, depends_on_id) VALUES(2, 1)", [])
+            .unwrap();
+        // uuid must not exist yet on a v4 DB.
+        conn.query_row("SELECT uuid FROM tasks", [], |r| r.get::<_, String>(0))
+            .expect_err("uuid must NOT exist before migration");
+    }
+
+    let mut cmd = Command::cargo_bin("todo-sqlite-cli").unwrap();
+    cmd.arg("--db").arg(&db).args(["list", "--json"]);
+    cmd.env_remove("TODO_SQLITE_CLI_DB");
+    cmd.assert().success();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let v: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(v, "5");
+
+    // Row counts preserved, ids preserved, every task has a distinct
+    // well-formed uuid.
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+
+    let mut stmt = conn
+        .prepare("SELECT id, uuid FROM tasks ORDER BY id")
+        .unwrap();
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        rows[0].1.len(),
+        36,
+        "uuid should be a canonical 36-char string"
+    );
+    assert_ne!(rows[0].1, rows[1].1, "each task must get a distinct uuid");
+
+    // The tag survived, keyed by the new uuid.
+    let tag_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tags WHERE task_uuid = ?1 AND tag = 'infra'",
+            params![rows[0].1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag_count, 1, "tag must be repointed at the blocker's uuid");
+
+    // The dep edge survived, still pointing task 2 -> task 1 by uuid.
+    let dep_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM deps WHERE task_uuid = ?1 AND depends_on_uuid = ?2",
+            params![rows[1].1, rows[0].1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        dep_count, 1,
+        "dep edge must be repointed at the same logical tasks by uuid"
+    );
 }

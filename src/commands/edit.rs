@@ -10,7 +10,7 @@ use crate::format;
 pub fn run(
     db_path: &Path,
     json: bool,
-    id: i64,
+    id: &str,
     title: Option<&str>,
     details: Option<&str>,
     append_details: Option<&str>,
@@ -18,8 +18,8 @@ pub fn run(
     priority: Option<i64>,
     add_tag: &[String],
     rm_tag: &[String],
-    add_dep: &[i64],
-    rm_dep: &[i64],
+    add_dep: &[String],
+    rm_dep: &[String],
     gate: bool,
     no_gate: bool,
 ) -> CliResult<()> {
@@ -29,38 +29,68 @@ pub fn run(
             "database is not initialized; run `todo-sqlite-cli init` first",
         ));
     }
-    db::require_task_exists(&conn, id)?;
+    let target = db::resolve_one(&conn, id)?;
+    let uuid = target.uuid.clone();
+    let display_id = target.id;
+
+    // Dependency args are resolved to specific uuids up front (each may be
+    // ambiguous itself) — the transaction below only ever touches `deps` by
+    // uuid.
+    let add_dep_uuids = resolve_deps(&conn, &uuid, add_dep)?;
+    let rm_dep_uuids = resolve_deps(&conn, &uuid, rm_dep)?;
 
     let tx = conn
         .transaction()
         .map_err(|e| system(format!("begin tx failed: {e}")))?;
 
-    apply_title(&tx, id, title)?;
-    apply_details(&tx, id, details, append_details, clear_details)?;
-    apply_priority(&tx, id, priority)?;
-    apply_gate(&tx, id, gate, no_gate)?;
-    apply_tags(&tx, id, add_tag, rm_tag)?;
-    apply_deps(&tx, id, add_dep, rm_dep)?;
+    apply_title(&tx, &uuid, title)?;
+    apply_details(&tx, &uuid, details, append_details, clear_details)?;
+    apply_priority(&tx, &uuid, priority)?;
+    apply_gate(&tx, &uuid, gate, no_gate)?;
+    apply_tags(&tx, &uuid, add_tag, rm_tag)?;
+    apply_deps(&tx, &uuid, &add_dep_uuids, &rm_dep_uuids)?;
 
     tx.commit()
         .map_err(|e| system(format!("commit failed: {e}")))?;
 
-    let t = db::load_task(&conn, id)?;
+    let t = db::load_task_by_uuid(&conn, &uuid)?;
     if json {
         format::print_task_json(&t);
     } else {
-        println!("edited {id}");
+        println!("edited {display_id}");
     }
     Ok(())
 }
 
-fn apply_title(tx: &rusqlite::Transaction, id: i64, title: Option<&str>) -> CliResult<()> {
+/// Resolve each `--add-dep`/`--rm-dep` argument to a specific task uuid,
+/// rejecting self-deps up front by display id (a quick, friendly check —
+/// the real guard is `uuid == self_uuid` once resolved).
+fn resolve_deps(
+    conn: &rusqlite::Connection,
+    self_uuid: &str,
+    raw: &[String],
+) -> CliResult<Vec<String>> {
+    let mut out = Vec::new();
+    for r in raw {
+        let t = db::resolve_one(conn, r).map_err(|e| user(format!("dependency {r}: {e}")))?;
+        if t.uuid == self_uuid {
+            return Err(user("a task cannot depend on itself"));
+        }
+        out.push(t.uuid);
+    }
+    Ok(out)
+}
+
+fn apply_title(tx: &rusqlite::Transaction, uuid: &str, title: Option<&str>) -> CliResult<()> {
     if let Some(t) = title {
         if t.trim().is_empty() {
             return Err(user("title must not be empty"));
         }
-        tx.execute("UPDATE tasks SET title = ?1 WHERE id = ?2", params![t, id])
-            .map_err(|e| system(format!("update failed: {e}")))?;
+        tx.execute(
+            "UPDATE tasks SET title = ?1 WHERE uuid = ?2",
+            params![t, uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
     }
     Ok(())
 }
@@ -69,7 +99,7 @@ fn apply_title(tx: &rusqlite::Transaction, id: i64, title: Option<&str>) -> CliR
 /// and `--clear-details` may not be combined.
 fn apply_details(
     tx: &rusqlite::Transaction,
-    id: i64,
+    uuid: &str,
     details: Option<&str>,
     append_details: Option<&str>,
     clear_details: bool,
@@ -83,8 +113,8 @@ fn apply_details(
     }
     if let Some(d) = details {
         tx.execute(
-            "UPDATE tasks SET details = ?1 WHERE id = ?2",
-            params![d, id],
+            "UPDATE tasks SET details = ?1 WHERE uuid = ?2",
+            params![d, uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
@@ -94,8 +124,8 @@ fn apply_details(
         }
         let current: Option<String> = tx
             .query_row(
-                "SELECT details FROM tasks WHERE id = ?1",
-                params![id],
+                "SELECT details FROM tasks WHERE uuid = ?1",
+                params![uuid],
                 |r| r.get(0),
             )
             .map_err(|e| system(format!("read details failed: {e}")))?;
@@ -104,59 +134,68 @@ fn apply_details(
             Some(existing) => format!("{existing}\n{extra}"),
         };
         tx.execute(
-            "UPDATE tasks SET details = ?1 WHERE id = ?2",
-            params![new, id],
+            "UPDATE tasks SET details = ?1 WHERE uuid = ?2",
+            params![new, uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
     if clear_details {
-        tx.execute("UPDATE tasks SET details = NULL WHERE id = ?1", params![id])
-            .map_err(|e| system(format!("update failed: {e}")))?;
-    }
-    Ok(())
-}
-
-fn apply_priority(tx: &rusqlite::Transaction, id: i64, priority: Option<i64>) -> CliResult<()> {
-    if let Some(p) = priority {
         tx.execute(
-            "UPDATE tasks SET priority = ?1 WHERE id = ?2",
-            params![p, id],
+            "UPDATE tasks SET details = NULL WHERE uuid = ?1",
+            params![uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     }
     Ok(())
 }
 
-fn apply_gate(tx: &rusqlite::Transaction, id: i64, gate: bool, no_gate: bool) -> CliResult<()> {
+fn apply_priority(tx: &rusqlite::Transaction, uuid: &str, priority: Option<i64>) -> CliResult<()> {
+    if let Some(p) = priority {
+        tx.execute(
+            "UPDATE tasks SET priority = ?1 WHERE uuid = ?2",
+            params![p, uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+fn apply_gate(tx: &rusqlite::Transaction, uuid: &str, gate: bool, no_gate: bool) -> CliResult<()> {
     // clap's `conflicts_with` already rejects passing both flags together.
     if gate {
-        tx.execute("UPDATE tasks SET is_gate = 1 WHERE id = ?1", params![id])
-            .map_err(|e| system(format!("update failed: {e}")))?;
+        tx.execute(
+            "UPDATE tasks SET is_gate = 1 WHERE uuid = ?1",
+            params![uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
     }
     if no_gate {
-        tx.execute("UPDATE tasks SET is_gate = 0 WHERE id = ?1", params![id])
-            .map_err(|e| system(format!("update failed: {e}")))?;
+        tx.execute(
+            "UPDATE tasks SET is_gate = 0 WHERE uuid = ?1",
+            params![uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
     }
     Ok(())
 }
 
 fn apply_tags(
     tx: &rusqlite::Transaction,
-    id: i64,
+    uuid: &str,
     add_tag: &[String],
     rm_tag: &[String],
 ) -> CliResult<()> {
     for tag in add_tag {
         tx.execute(
-            "INSERT OR IGNORE INTO tags(task_id, tag) VALUES(?1, ?2)",
-            params![id, tag],
+            "INSERT OR IGNORE INTO tags(task_uuid, tag) VALUES(?1, ?2)",
+            params![uuid, tag],
         )
         .map_err(|e| system(format!("tag insert failed: {e}")))?;
     }
     for tag in rm_tag {
         tx.execute(
-            "DELETE FROM tags WHERE task_id = ?1 AND tag = ?2",
-            params![id, tag],
+            "DELETE FROM tags WHERE task_uuid = ?1 AND tag = ?2",
+            params![uuid, tag],
         )
         .map_err(|e| system(format!("tag delete failed: {e}")))?;
     }
@@ -165,61 +204,51 @@ fn apply_tags(
 
 fn apply_deps(
     tx: &rusqlite::Transaction,
-    id: i64,
-    add_dep: &[i64],
-    rm_dep: &[i64],
+    uuid: &str,
+    add_dep: &[String],
+    rm_dep: &[String],
 ) -> CliResult<()> {
     for dep in add_dep {
-        if *dep == id {
-            return Err(user("a task cannot depend on itself"));
-        }
-        // verify dep exists (without ? operator in closure)
-        let exists: Option<i64> = tx
-            .query_row("SELECT id FROM tasks WHERE id = ?1", params![dep], |r| {
-                r.get(0)
-            })
-            .ok();
-        if exists.is_none() {
-            return Err(user(format!("dependency task {dep} not found")));
-        }
-        if would_create_cycle(tx, id, *dep)? {
-            return Err(user(format!(
-                "adding dependency {dep} would create a cycle"
-            )));
+        if would_create_cycle(tx, uuid, dep)? {
+            return Err(user("adding this dependency would create a cycle"));
         }
         tx.execute(
-            "INSERT OR IGNORE INTO deps(task_id, depends_on_id) VALUES(?1, ?2)",
-            params![id, dep],
+            "INSERT OR IGNORE INTO deps(task_uuid, depends_on_uuid) VALUES(?1, ?2)",
+            params![uuid, dep],
         )
         .map_err(|e| system(format!("dep insert failed: {e}")))?;
     }
     for dep in rm_dep {
         tx.execute(
-            "DELETE FROM deps WHERE task_id = ?1 AND depends_on_id = ?2",
-            params![id, dep],
+            "DELETE FROM deps WHERE task_uuid = ?1 AND depends_on_uuid = ?2",
+            params![uuid, dep],
         )
         .map_err(|e| system(format!("dep delete failed: {e}")))?;
     }
     Ok(())
 }
 
-fn would_create_cycle(tx: &rusqlite::Transaction, task_id: i64, new_dep: i64) -> CliResult<bool> {
-    // Adding task_id -> new_dep creates a cycle iff new_dep already depends
-    // (transitively) on task_id. DFS from new_dep's dependencies.
-    let mut stack = vec![new_dep];
+fn would_create_cycle(
+    tx: &rusqlite::Transaction,
+    task_uuid: &str,
+    new_dep: &str,
+) -> CliResult<bool> {
+    // Adding task_uuid -> new_dep creates a cycle iff new_dep already depends
+    // (transitively) on task_uuid. DFS from new_dep's dependencies.
+    let mut stack = vec![new_dep.to_string()];
     let mut seen = std::collections::HashSet::new();
     while let Some(node) = stack.pop() {
-        if node == task_id {
+        if node == task_uuid {
             return Ok(true);
         }
-        if !seen.insert(node) {
+        if !seen.insert(node.clone()) {
             continue;
         }
         let mut stmt = tx
-            .prepare("SELECT depends_on_id FROM deps WHERE task_id = ?1")
+            .prepare("SELECT depends_on_uuid FROM deps WHERE task_uuid = ?1")
             .map_err(|e| system(format!("prepare failed: {e}")))?;
         let rows = stmt
-            .query_map(params![node], |r| r.get::<_, i64>(0))
+            .query_map(params![node], |r| r.get::<_, String>(0))
             .map_err(|e| system(format!("query failed: {e}")))?;
         for r in rows {
             stack.push(r.map_err(|e| system(format!("row failed: {e}")))?);

@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{system, user, CliResult};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE tasks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid         TEXT PRIMARY KEY,
+    id           INTEGER NOT NULL,
     title        TEXT NOT NULL,
     details      TEXT,
     status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done','rejected')),
@@ -22,16 +23,16 @@ CREATE TABLE tasks (
 );
 
 CREATE TABLE tags (
-    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    tag     TEXT NOT NULL,
-    PRIMARY KEY (task_id, tag)
+    task_uuid TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+    tag       TEXT NOT NULL,
+    PRIMARY KEY (task_uuid, tag)
 );
 
 CREATE TABLE deps (
-    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    depends_on_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    PRIMARY KEY (task_id, depends_on_id),
-    CHECK (task_id <> depends_on_id)
+    task_uuid       TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+    depends_on_uuid TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+    PRIMARY KEY (task_uuid, depends_on_uuid),
+    CHECK (task_uuid <> depends_on_uuid)
 );
 
 CREATE TABLE meta (
@@ -40,8 +41,9 @@ CREATE TABLE meta (
 );
 
 CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+CREATE INDEX idx_tasks_id ON tasks(id);
 CREATE INDEX idx_tags_tag ON tags(tag);
-CREATE INDEX idx_deps_depends_on ON deps(depends_on_id);
+CREATE INDEX idx_deps_depends_on ON deps(depends_on_uuid);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +71,7 @@ impl Status {
 #[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: i64,
+    pub uuid: String,
     pub title: String,
     pub details: Option<String>,
     pub status: String,
@@ -152,6 +155,9 @@ fn migrate(conn: &Connection) -> CliResult<()> {
     }
     if current <= 3 {
         migrate_v3_to_v4(conn)?;
+    }
+    if current <= 4 {
+        migrate_v4_to_v5(conn)?;
     }
     Ok(())
 }
@@ -333,6 +339,190 @@ fn migrate_v3_to_v4(conn: &Connection) -> CliResult<()> {
     Ok(())
 }
 
+/// v4's `id` was the AUTOINCREMENT primary key; v5 promotes a generated UUID
+/// to the real primary key and relaxes `id` to a plain, non-unique "display
+/// id". A cross-node merge can then legitimately produce two tasks sharing a
+/// display id — that no longer corrupts anything, since identity is now the
+/// uuid; `resolve_one` surfaces the ambiguity to the operator instead.
+/// SQLite has no builtin UUID generator, so — unlike v1-v4, which are pure
+/// SQL — this migration generates uuids in Rust and can't be one
+/// `execute_batch` script; it's wrapped in a single manual transaction
+/// instead.
+fn migrate_v4_to_v5(conn: &Connection) -> CliResult<()> {
+    struct OldTask {
+        id: i64,
+        title: String,
+        details: Option<String>,
+        status: String,
+        priority: i64,
+        is_gate: bool,
+        created_at: String,
+        started_at: Option<String>,
+        completed_at: Option<String>,
+    }
+
+    conn.pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|e| system(format!("pragma foreign_keys=OFF failed: {e}")))?;
+    conn.execute("BEGIN", [])
+        .map_err(|e| system(format!("begin failed: {e}")))?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE tasks_new (
+            uuid         TEXT PRIMARY KEY,
+            id           INTEGER NOT NULL,
+            title        TEXT NOT NULL,
+            details      TEXT,
+            status       TEXT NOT NULL CHECK(status IN ('pending','partial','in-progress','done','rejected')),
+            priority     INTEGER NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5),
+            is_gate      INTEGER NOT NULL DEFAULT 0 CHECK(is_gate IN (0,1)),
+            created_at   TEXT NOT NULL,
+            started_at   TEXT,
+            completed_at TEXT
+        );
+        CREATE TABLE tags_new (
+            task_uuid TEXT NOT NULL REFERENCES tasks_new(uuid) ON DELETE CASCADE,
+            tag       TEXT NOT NULL,
+            PRIMARY KEY (task_uuid, tag)
+        );
+        CREATE TABLE deps_new (
+            task_uuid       TEXT NOT NULL REFERENCES tasks_new(uuid) ON DELETE CASCADE,
+            depends_on_uuid TEXT NOT NULL REFERENCES tasks_new(uuid) ON DELETE CASCADE,
+            PRIMARY KEY (task_uuid, depends_on_uuid),
+            CHECK (task_uuid <> depends_on_uuid)
+        );
+        "#,
+    )
+    .map_err(|e| system(format!("v4->v5 migration (create) failed: {e}")))?;
+
+    let old_tasks: Vec<OldTask> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at
+                 FROM tasks",
+            )
+            .map_err(|e| system(format!("prepare failed: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(OldTask {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    details: r.get(2)?,
+                    status: r.get(3)?,
+                    priority: r.get(4)?,
+                    is_gate: r.get(5)?,
+                    created_at: r.get(6)?,
+                    started_at: r.get(7)?,
+                    completed_at: r.get(8)?,
+                })
+            })
+            .map_err(|e| system(format!("query failed: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+        }
+        out
+    };
+
+    let mut id_to_uuid: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    for t in &old_tasks {
+        let new_uuid = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO tasks_new(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                new_uuid,
+                t.id,
+                t.title,
+                t.details,
+                t.status,
+                t.priority,
+                t.is_gate,
+                t.created_at,
+                t.started_at,
+                t.completed_at,
+            ],
+        )
+        .map_err(|e| system(format!("tasks_new insert failed: {e}")))?;
+        id_to_uuid.insert(t.id, new_uuid);
+    }
+
+    let old_tags: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT task_id, tag FROM tags")
+            .map_err(|e| system(format!("prepare failed: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| system(format!("query failed: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+        }
+        out
+    };
+    for (task_id, tag) in old_tags {
+        let task_uuid = id_to_uuid
+            .get(&task_id)
+            .ok_or_else(|| system(format!("tag references unknown task id {task_id}")))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO tags_new(task_uuid, tag) VALUES(?1, ?2)",
+            params![task_uuid, tag],
+        )
+        .map_err(|e| system(format!("tags_new insert failed: {e}")))?;
+    }
+
+    let old_deps: Vec<(i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT task_id, depends_on_id FROM deps")
+            .map_err(|e| system(format!("prepare failed: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| system(format!("query failed: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+        }
+        out
+    };
+    for (task_id, depends_on_id) in old_deps {
+        let task_uuid = id_to_uuid
+            .get(&task_id)
+            .ok_or_else(|| system(format!("dep references unknown task id {task_id}")))?;
+        let depends_on_uuid = id_to_uuid
+            .get(&depends_on_id)
+            .ok_or_else(|| system(format!("dep references unknown task id {depends_on_id}")))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO deps_new(task_uuid, depends_on_uuid) VALUES(?1, ?2)",
+            params![task_uuid, depends_on_uuid],
+        )
+        .map_err(|e| system(format!("deps_new insert failed: {e}")))?;
+    }
+
+    conn.execute_batch(
+        r#"
+        DROP TABLE deps;
+        DROP TABLE tags;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_new RENAME TO tasks;
+        ALTER TABLE tags_new RENAME TO tags;
+        ALTER TABLE deps_new RENAME TO deps;
+        CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
+        CREATE INDEX idx_tasks_id ON tasks(id);
+        CREATE INDEX idx_tags_tag ON tags(tag);
+        CREATE INDEX idx_deps_depends_on ON deps(depends_on_uuid);
+        DELETE FROM sqlite_sequence WHERE name = 'tasks';
+        UPDATE meta SET value = '5' WHERE key = 'schema_version';
+        "#,
+    )
+    .map_err(|e| system(format!("v4->v5 migration (finish) failed: {e}")))?;
+
+    conn.execute("COMMIT", [])
+        .map_err(|e| system(format!("commit failed: {e}")))?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|e| system(format!("pragma foreign_keys=ON failed: {e}")))?;
+    Ok(())
+}
+
 pub fn create_schema(conn: &Connection) -> CliResult<()> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| system(format!("schema create failed: {e}")))?;
@@ -356,50 +546,114 @@ pub fn is_initialized(conn: &Connection) -> bool {
     .is_some()
 }
 
-pub fn load_task(conn: &Connection, id: i64) -> CliResult<Task> {
+/// Base task columns, in the fixed order every `SELECT ... FROM tasks` in
+/// this codebase uses. Shared so a query built anywhere can hand its rows
+/// straight to `row_to_task_base` instead of re-deriving the column list.
+pub const TASK_COLUMNS: &str =
+    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at";
+
+pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        uuid: row.get(1)?,
+        title: row.get(2)?,
+        details: row.get(3)?,
+        status: row.get(4)?,
+        priority: row.get(5)?,
+        is_gate: row.get(6)?,
+        tags: Vec::new(),
+        depends_on: Vec::new(),
+        blocked: false,
+        created_at: row.get(7)?,
+        started_at: row.get(8)?,
+        completed_at: row.get(9)?,
+    })
+}
+
+pub fn load_task_by_uuid(conn: &Connection, task_uuid: &str) -> CliResult<Task> {
     let task = conn
         .query_row(
-            "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at
-             FROM tasks WHERE id = ?1",
-            params![id],
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE uuid = ?1"),
+            params![task_uuid],
             row_to_task_base,
         )
         .optional()
         .map_err(|e| system(format!("query failed: {e}")))?
-        .ok_or_else(|| user(format!("task {id} not found")))?;
+        .ok_or_else(|| system(format!("task {task_uuid} vanished mid-operation")))?;
     hydrate(conn, task)
 }
 
-fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
-    Ok(Task {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        details: row.get(2)?,
-        status: row.get(3)?,
-        priority: row.get(4)?,
-        is_gate: row.get(5)?,
-        tags: Vec::new(),
-        depends_on: Vec::new(),
-        blocked: false,
-        created_at: row.get(6)?,
-        started_at: row.get(7)?,
-        completed_at: row.get(8)?,
-    })
+/// Resolve a user-supplied `<ID>` CLI argument — either a display id or a
+/// full UUID — to exactly one task. A display id is unique per-node under
+/// normal use, but a cross-node merge can legitimately leave two tasks
+/// sharing one; rather than silently picking one (today's bug, worse once
+/// `id` is explicitly non-unique) this lists every match and asks the
+/// caller to re-run with the full uuid. No prefix matching: a short numeric
+/// prefix like "12" is genuinely ambiguous between "display id 12" and "a
+/// uuid starting with 12...", so only a full parse of either form is
+/// accepted.
+pub fn resolve_one(conn: &Connection, raw: &str) -> CliResult<Task> {
+    if let Ok(id) = raw.parse::<i64>() {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1 ORDER BY uuid"
+            ))
+            .map_err(|e| system(format!("prepare failed: {e}")))?;
+        let rows = stmt
+            .query_map(params![id], row_to_task_base)
+            .map_err(|e| system(format!("query failed: {e}")))?;
+        let mut matches = Vec::new();
+        for r in rows {
+            matches.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+        }
+        drop(stmt);
+        return match matches.len() {
+            0 => Err(user(format!("task {raw} not found"))),
+            1 => hydrate(conn, matches.into_iter().next().unwrap()),
+            n => {
+                let mut msg = format!(
+                    "task id {raw} is ambiguous ({n} matches) — re-run with the full uuid shown below to pick one:\n"
+                );
+                for t in &matches {
+                    msg.push_str(&format!(
+                        "  id={} uuid={} status={} title={}\n",
+                        t.id, t.uuid, t.status, t.title
+                    ));
+                }
+                Err(user(msg))
+            }
+        };
+    }
+    if uuid::Uuid::parse_str(raw).is_ok() {
+        let task = conn
+            .query_row(
+                &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE uuid = ?1"),
+                params![raw],
+                row_to_task_base,
+            )
+            .optional()
+            .map_err(|e| system(format!("query failed: {e}")))?;
+        return match task {
+            Some(t) => hydrate(conn, t),
+            None => Err(user(format!("task {raw} not found"))),
+        };
+    }
+    Err(user(format!("'{raw}' is not a task id or UUID")))
 }
 
 fn hydrate(conn: &Connection, mut t: Task) -> CliResult<Task> {
-    t.tags = load_tags(conn, t.id)?;
-    t.depends_on = load_deps(conn, t.id)?;
-    t.blocked = is_blocked(conn, t.id)?;
+    t.tags = load_tags(conn, &t.uuid)?;
+    t.depends_on = load_deps(conn, &t.uuid)?;
+    t.blocked = is_blocked(conn, &t.uuid)?;
     Ok(t)
 }
 
-pub fn load_tags(conn: &Connection, task_id: i64) -> CliResult<Vec<String>> {
+pub fn load_tags(conn: &Connection, task_uuid: &str) -> CliResult<Vec<String>> {
     let mut stmt = conn
-        .prepare("SELECT tag FROM tags WHERE task_id = ?1 ORDER BY tag")
+        .prepare("SELECT tag FROM tags WHERE task_uuid = ?1 ORDER BY tag")
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
-        .query_map(params![task_id], |r| r.get::<_, String>(0))
+        .query_map(params![task_uuid], |r| r.get::<_, String>(0))
         .map_err(|e| system(format!("query failed: {e}")))?;
     let mut out = Vec::new();
     for r in rows {
@@ -408,12 +662,19 @@ pub fn load_tags(conn: &Connection, task_id: i64) -> CliResult<Vec<String>> {
     Ok(out)
 }
 
-pub fn load_deps(conn: &Connection, task_id: i64) -> CliResult<Vec<i64>> {
+/// Display ids of this task's dependency targets, for `Task.depends_on`
+/// (text/JSON output). Joins through `uuid` so the id shown always reflects
+/// the current display id of the dependency's row.
+pub fn load_deps(conn: &Connection, task_uuid: &str) -> CliResult<Vec<i64>> {
     let mut stmt = conn
-        .prepare("SELECT depends_on_id FROM deps WHERE task_id = ?1 ORDER BY depends_on_id")
+        .prepare(
+            "SELECT t2.id FROM deps d
+             JOIN tasks t2 ON t2.uuid = d.depends_on_uuid
+             WHERE d.task_uuid = ?1 ORDER BY t2.id",
+        )
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
-        .query_map(params![task_id], |r| r.get::<_, i64>(0))
+        .query_map(params![task_uuid], |r| r.get::<_, i64>(0))
         .map_err(|e| system(format!("query failed: {e}")))?;
     let mut out = Vec::new();
     for r in rows {
@@ -422,28 +683,31 @@ pub fn load_deps(conn: &Connection, task_id: i64) -> CliResult<Vec<i64>> {
     Ok(out)
 }
 
-pub fn is_blocked(conn: &Connection, task_id: i64) -> CliResult<bool> {
+/// Uuid-space dependency targets — for the merge engine, which must join on
+/// true identity rather than the (now possibly duplicate) display id.
+pub fn load_dep_uuids(conn: &Connection, task_uuid: &str) -> CliResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT depends_on_uuid FROM deps WHERE task_uuid = ?1 ORDER BY depends_on_uuid")
+        .map_err(|e| system(format!("prepare failed: {e}")))?;
+    let rows = stmt
+        .query_map(params![task_uuid], |r| r.get::<_, String>(0))
+        .map_err(|e| system(format!("query failed: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+    }
+    Ok(out)
+}
+
+pub fn is_blocked(conn: &Connection, task_uuid: &str) -> CliResult<bool> {
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM deps d
-             JOIN tasks t ON t.id = d.depends_on_id
-             WHERE d.task_id = ?1 AND t.status <> 'done'",
-            params![task_id],
+             JOIN tasks t ON t.uuid = d.depends_on_uuid
+             WHERE d.task_uuid = ?1 AND t.status <> 'done'",
+            params![task_uuid],
             |r| r.get(0),
         )
         .map_err(|e| system(format!("query failed: {e}")))?;
     Ok(count > 0)
-}
-
-pub fn require_task_exists(conn: &Connection, id: i64) -> CliResult<()> {
-    let exists: Option<i64> = conn
-        .query_row("SELECT id FROM tasks WHERE id = ?1", params![id], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(|e| system(format!("query failed: {e}")))?;
-    if exists.is_none() {
-        return Err(user(format!("task {id} not found")));
-    }
-    Ok(())
 }

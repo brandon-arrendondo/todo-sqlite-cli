@@ -11,8 +11,11 @@ const CONFLICT_TAG: &str = "merge-conflict";
 
 /// A task row plus its tags/deps, loaded independently of any resolved id
 /// mapping — exactly what's on disk in one of the three input databases.
+/// Identity is `uuid`; `id` is carried along purely as the display value to
+/// write back out (it is never used to join across databases).
 #[derive(Debug, Clone)]
 struct RawTask {
+    uuid: String,
     id: i64,
     title: String,
     details: Option<String>,
@@ -23,12 +26,13 @@ struct RawTask {
     started_at: Option<String>,
     completed_at: Option<String>,
     tags: Vec<String>,
-    deps: Vec<i64>,
+    deps: Vec<String>,
 }
 
 /// The merged, final form of one task, ready to write to the output db.
 #[derive(Debug, Clone)]
 struct MergedTask {
+    uuid: String,
     id: i64,
     title: String,
     details: Option<String>,
@@ -39,7 +43,7 @@ struct MergedTask {
     started_at: Option<String>,
     completed_at: Option<String>,
     tags: HashSet<String>,
-    deps: HashSet<i64>,
+    deps: HashSet<String>,
     conflict: bool,
 }
 
@@ -56,7 +60,6 @@ pub struct ConflictNote {
 pub struct MergeReport {
     pub tasks_total: usize,
     pub carried_unchanged: usize,
-    pub renumbered: usize,
     pub auto_resolved: usize,
     pub conflicts: Vec<ConflictNote>,
 }
@@ -69,6 +72,13 @@ pub struct MergeOptions {
 /// Run the merge purely in memory and write the result into `out_path`
 /// (a fresh file; must not already exist as a non-empty db — callers
 /// arrange atomic replacement via a temp path + rename).
+///
+/// Identity across base/ours/theirs is the `uuid` — a uuid can't collide, so
+/// unlike the pre-uuid design there is no renumbering to do here. Two
+/// distinct tasks legitimately ending up with the same display `id` after
+/// this merge is expected; it surfaces the next time someone runs
+/// `show <that id>`, via `db::resolve_one`'s ambiguity listing, not as a
+/// merge-time problem.
 pub fn merge_databases(
     base: Option<&Connection>,
     ours: &Connection,
@@ -80,29 +90,22 @@ pub fn merge_databases(
     let ours_tasks = load_all(ours)?;
     let theirs_tasks = load_all(theirs)?;
 
-    let base_ids: HashSet<i64> = base_tasks.iter().map(|t| t.id).collect();
-    let ours_by_id: HashMap<i64, &RawTask> = ours_tasks.iter().map(|t| (t.id, t)).collect();
-    let theirs_by_id: HashMap<i64, &RawTask> = theirs_tasks.iter().map(|t| (t.id, t)).collect();
-    let base_by_id: HashMap<i64, &RawTask> = base_tasks.iter().map(|t| (t.id, t)).collect();
+    let base_uuids: HashSet<String> = base_tasks.iter().map(|t| t.uuid.clone()).collect();
+    let ours_by_uuid: HashMap<&str, &RawTask> =
+        ours_tasks.iter().map(|t| (t.uuid.as_str(), t)).collect();
+    let theirs_by_uuid: HashMap<&str, &RawTask> =
+        theirs_tasks.iter().map(|t| (t.uuid.as_str(), t)).collect();
+    let base_by_uuid: HashMap<&str, &RawTask> =
+        base_tasks.iter().map(|t| (t.uuid.as_str(), t)).collect();
 
     let mut report = MergeReport::default();
     let mut merged: Vec<MergedTask> = Vec::new();
 
-    // Highest id already claimed by any task we plan to keep under its
-    // current id (all base ids, all ours ids). New theirs-only ids that
-    // collide get renumbered above this (and above each other).
-    let mut max_id = base_ids
-        .iter()
-        .chain(ours_by_id.keys())
-        .copied()
-        .max()
-        .unwrap_or(0);
-
-    // --- 1. Common tasks: ids known to base. ---
-    for id in &base_ids {
-        let base_t = base_by_id[id];
-        let ours_t = ours_by_id.get(id).copied();
-        let theirs_t = theirs_by_id.get(id).copied();
+    // --- 1. Common tasks: uuids known to base. ---
+    for uuid in &base_uuids {
+        let base_t = base_by_uuid[uuid.as_str()];
+        let ours_t = ours_by_uuid.get(uuid.as_str()).copied();
+        let theirs_t = theirs_by_uuid.get(uuid.as_str()).copied();
         match (ours_t, theirs_t) {
             (None, None) => { /* deleted both sides */ }
             (None, Some(t)) => {
@@ -110,7 +113,7 @@ pub fn merge_databases(
                     // deleted in ours, unchanged in theirs -> respect deletion
                 } else {
                     report.conflicts.push(ConflictNote {
-                        task_id: *id,
+                        task_id: t.id,
                         field: "existence".into(),
                         ours: "deleted".into(),
                         theirs: "modified".into(),
@@ -124,7 +127,7 @@ pub fn merge_databases(
                     // deleted in theirs, unchanged in ours -> respect deletion
                 } else {
                     report.conflicts.push(ConflictNote {
-                        task_id: *id,
+                        task_id: t.id,
                         field: "existence".into(),
                         ours: "modified".into(),
                         theirs: "deleted".into(),
@@ -140,71 +143,66 @@ pub fn merge_databases(
         report.tasks_total += 1;
     }
 
-    // --- 2. New tasks: ids not known to base. ---
-    let mut id_map: HashMap<i64, i64> = HashMap::new();
-    let mut used_ids: HashSet<i64> = merged.iter().map(|t| t.id).collect();
-    used_ids.extend(ours_by_id.keys().filter(|id| !base_ids.contains(*id)));
+    // --- 1b. Tasks present on both sides but unknown to base — most often
+    // because there IS no base (a 2-way union merge). A shared uuid always
+    // means "the same task": unlike the old id-based design, this can't be
+    // coincidental, so it must still be reconciled into one row rather than
+    // unioned in twice (which would violate the uuid primary key). With no
+    // base to tell which side changed, an actual field difference can't be
+    // auto-resolved the way `merge_common` does — it's reported as a
+    // conflict and `ours` wins, same convention as every other conflict. ---
+    for uuid in ours_by_uuid.keys() {
+        if base_uuids.contains(*uuid) {
+            continue; // already handled in step 1
+        }
+        if let Some(theirs_t) = theirs_by_uuid.get(uuid) {
+            merged.push(merge_common_no_base(
+                ours_by_uuid[uuid],
+                theirs_t,
+                &mut report,
+            ));
+            report.tasks_total += 1;
+        }
+    }
 
-    // ours' new tasks keep their ids verbatim.
+    // --- 2. New tasks: uuids known to only one side. Carry straight through
+    // with their own id/uuid — a uuid can't collide, and a shared display id
+    // is fine (see the doc comment above). ---
     for t in &ours_tasks {
-        if !base_ids.contains(&t.id) {
+        if !base_uuids.contains(&t.uuid) && !theirs_by_uuid.contains_key(t.uuid.as_str()) {
+            merged.push(raw_to_merged(t, false));
+            report.tasks_total += 1;
+            report.carried_unchanged += 1;
+        }
+    }
+    for t in &theirs_tasks {
+        if !base_uuids.contains(&t.uuid) && !ours_by_uuid.contains_key(t.uuid.as_str()) {
             merged.push(raw_to_merged(t, false));
             report.tasks_total += 1;
             report.carried_unchanged += 1;
         }
     }
 
-    // theirs' new tasks: renumber on any collision, in created_at order for
-    // determinism.
-    let mut theirs_new: Vec<&RawTask> = theirs_tasks
-        .iter()
-        .filter(|t| !base_ids.contains(&t.id))
-        .collect();
-    theirs_new.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-
-    for t in theirs_new {
-        let final_id = if used_ids.contains(&t.id) {
-            max_id += 1;
-            report.renumbered += 1;
-            max_id
-        } else {
-            t.id
-        };
-        id_map.insert(t.id, final_id);
-        used_ids.insert(final_id);
-        max_id = max_id.max(final_id);
-
-        let mut mt = raw_to_merged(t, false);
-        mt.id = final_id;
-        mt.deps = mt.deps.into_iter().map(|d| remap(&id_map, d)).collect();
-        merged.push(mt);
-        report.tasks_total += 1;
-        report.carried_unchanged += 1;
-    }
-
-    // Apply the id_map to every merged task's deps now that it's complete
-    // (a common task may hold an edge onto a theirs-only new task).
-    for t in merged.iter_mut() {
-        t.deps = t.deps.iter().map(|d| remap(&id_map, *d)).collect();
-    }
-
     // Drop self-loops, edges to tasks that don't exist in the merged set,
     // and any edge that would introduce a cycle.
-    let alive: HashSet<i64> = merged.iter().map(|t| t.id).collect();
-    let mut adjacency: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let alive: HashSet<String> = merged.iter().map(|t| t.uuid.clone()).collect();
+    let mut adjacency: HashMap<String, HashSet<String>> = HashMap::new();
     for t in merged.iter_mut() {
-        let candidates: Vec<i64> = t
+        let candidates: Vec<String> = t
             .deps
             .iter()
-            .copied()
-            .filter(|d| *d != t.id && alive.contains(d))
+            .filter(|d| **d != t.uuid && alive.contains(*d))
+            .cloned()
             .collect();
         let mut kept = HashSet::new();
         for dep in candidates {
-            if would_cycle(&adjacency, t.id, dep) {
+            if would_cycle(&adjacency, &t.uuid, &dep) {
                 continue;
             }
-            adjacency.entry(t.id).or_default().insert(dep);
+            adjacency
+                .entry(t.uuid.clone())
+                .or_default()
+                .insert(dep.clone());
             kept.insert(dep);
         }
         t.deps = kept;
@@ -214,24 +212,24 @@ pub fn merge_databases(
     Ok(report)
 }
 
-fn remap(id_map: &HashMap<i64, i64>, id: i64) -> i64 {
-    *id_map.get(&id).unwrap_or(&id)
-}
-
-fn would_cycle(adjacency: &HashMap<i64, HashSet<i64>>, task_id: i64, new_dep: i64) -> bool {
-    // task_id -> new_dep creates a cycle iff new_dep already (transitively)
-    // depends on task_id.
-    let mut stack = vec![new_dep];
+fn would_cycle(
+    adjacency: &HashMap<String, HashSet<String>>,
+    task_uuid: &str,
+    new_dep: &str,
+) -> bool {
+    // task_uuid -> new_dep creates a cycle iff new_dep already (transitively)
+    // depends on task_uuid.
+    let mut stack = vec![new_dep.to_string()];
     let mut seen = HashSet::new();
     while let Some(node) = stack.pop() {
-        if node == task_id {
+        if node == task_uuid {
             return true;
         }
-        if !seen.insert(node) {
+        if !seen.insert(node.clone()) {
             continue;
         }
         if let Some(next) = adjacency.get(&node) {
-            stack.extend(next.iter().copied());
+            stack.extend(next.iter().cloned());
         }
     }
     false
@@ -247,6 +245,7 @@ fn fields_equal(a: &RawTask, b: &RawTask) -> bool {
 
 fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
     MergedTask {
+        uuid: t.uuid.clone(),
         id: t.id,
         title: t.title.clone(),
         details: t.details.clone(),
@@ -257,7 +256,7 @@ fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
         started_at: t.started_at.clone(),
         completed_at: t.completed_at.clone(),
         tags: t.tags.iter().cloned().collect(),
-        deps: t.deps.iter().copied().collect(),
+        deps: t.deps.iter().cloned().collect(),
         conflict,
     }
 }
@@ -415,14 +414,17 @@ fn merge_common(
         .chain(theirs.tags.iter())
         .cloned()
         .collect();
-    let deps: HashSet<i64> = ours
+    let deps: HashSet<String> = ours
         .deps
         .iter()
         .chain(theirs.deps.iter())
-        .copied()
+        .cloned()
         .collect();
 
     MergedTask {
+        uuid: base.uuid.clone(),
+        // The display id of a common task is never a field either side
+        // edits — it just carries through unchanged from base.
         id: base.id,
         title,
         details,
@@ -430,6 +432,74 @@ fn merge_common(
         priority,
         is_gate,
         created_at: base.created_at.clone(),
+        started_at,
+        completed_at,
+        tags,
+        deps,
+        conflict,
+    }
+}
+
+/// Reconcile a task both sides have (same uuid) but that base doesn't know
+/// about — no common ancestor to run a real 3-way diff against. A field
+/// that agrees carries through unchanged; a field that disagrees can't be
+/// attributed to either side, so it's a conflict: keep ours, tag it, and
+/// note it in the report, same convention as `merge_common`'s conflicts.
+fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeReport) -> MergedTask {
+    let mut conflict = false;
+
+    macro_rules! field {
+        ($name:literal, $f:ident) => {
+            if ours.$f == theirs.$f {
+                ours.$f.clone()
+            } else {
+                conflict = true;
+                report.conflicts.push(ConflictNote {
+                    task_id: ours.id,
+                    field: $name.into(),
+                    ours: format!("{:?}", ours.$f),
+                    theirs: format!("{:?}", theirs.$f),
+                    resolution: "kept ours (no common ancestor to reconcile against)".into(),
+                });
+                ours.$f.clone()
+            }
+        };
+    }
+
+    let title = field!("title", title);
+    let details = field!("details", details);
+    let status = field!("status", status);
+    let priority = field!("priority", priority);
+    let is_gate = field!("is_gate", is_gate);
+
+    let (started_at, completed_at) = if status == ours.status {
+        (ours.started_at.clone(), ours.completed_at.clone())
+    } else {
+        (theirs.started_at.clone(), theirs.completed_at.clone())
+    };
+
+    let tags: HashSet<String> = ours
+        .tags
+        .iter()
+        .chain(theirs.tags.iter())
+        .cloned()
+        .collect();
+    let deps: HashSet<String> = ours
+        .deps
+        .iter()
+        .chain(theirs.deps.iter())
+        .cloned()
+        .collect();
+
+    MergedTask {
+        uuid: ours.uuid.clone(),
+        id: ours.id,
+        title,
+        details,
+        status,
+        priority,
+        is_gate,
+        created_at: ours.created_at.clone(),
         started_at,
         completed_at,
         tags,
@@ -461,23 +531,24 @@ fn delta<'a>(base: &str, changed: &'a str) -> &'a str {
 
 fn load_all(conn: &Connection) -> CliResult<Vec<RawTask>> {
     let mut stmt = conn
-        .prepare(
-            "SELECT id, title, details, status, priority, is_gate, created_at, started_at, completed_at
-             FROM tasks ORDER BY id",
-        )
+        .prepare(&format!(
+            "SELECT {} FROM tasks ORDER BY uuid",
+            db::TASK_COLUMNS
+        ))
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
         .query_map([], |r| {
             Ok(RawTask {
                 id: r.get(0)?,
-                title: r.get(1)?,
-                details: r.get(2)?,
-                status: r.get(3)?,
-                priority: r.get(4)?,
-                is_gate: r.get(5)?,
-                created_at: r.get(6)?,
-                started_at: r.get(7)?,
-                completed_at: r.get(8)?,
+                uuid: r.get(1)?,
+                title: r.get(2)?,
+                details: r.get(3)?,
+                status: r.get(4)?,
+                priority: r.get(5)?,
+                is_gate: r.get(6)?,
+                created_at: r.get(7)?,
+                started_at: r.get(8)?,
+                completed_at: r.get(9)?,
                 tags: Vec::new(),
                 deps: Vec::new(),
             })
@@ -488,8 +559,8 @@ fn load_all(conn: &Connection) -> CliResult<Vec<RawTask>> {
         out.push(r.map_err(|e| system(format!("row failed: {e}")))?);
     }
     for t in out.iter_mut() {
-        t.tags = db::load_tags(conn, t.id)?;
-        t.deps = db::load_deps(conn, t.id)?;
+        t.tags = db::load_tags(conn, &t.uuid)?;
+        t.deps = db::load_dep_uuids(conn, &t.uuid)?;
     }
     Ok(out)
 }
@@ -508,15 +579,14 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
     let tx = conn
         .transaction()
         .map_err(|e| system(format!("begin tx failed: {e}")))?;
-    let mut max_id = 0i64;
     // Insert every task before any tags/deps — a dep can point at a task
-    // that sorts later in `merged`, and depends_on_id is a foreign key.
+    // that sorts later in `merged`, and depends_on_uuid is a foreign key.
     for t in merged {
-        max_id = max_id.max(t.id);
         tx.execute(
-            "INSERT INTO tasks(id, title, details, status, priority, is_gate, created_at, started_at, completed_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
+                t.uuid,
                 t.id,
                 t.title,
                 t.details,
@@ -533,37 +603,27 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
     for t in merged {
         for tag in &t.tags {
             tx.execute(
-                "INSERT OR IGNORE INTO tags(task_id, tag) VALUES(?1, ?2)",
-                params![t.id, tag],
+                "INSERT OR IGNORE INTO tags(task_uuid, tag) VALUES(?1, ?2)",
+                params![t.uuid, tag],
             )
             .map_err(|e| system(format!("tag insert failed: {e}")))?;
         }
         if t.conflict {
             tx.execute(
-                "INSERT OR IGNORE INTO tags(task_id, tag) VALUES(?1, ?2)",
-                params![t.id, CONFLICT_TAG],
+                "INSERT OR IGNORE INTO tags(task_uuid, tag) VALUES(?1, ?2)",
+                params![t.uuid, CONFLICT_TAG],
             )
             .map_err(|e| system(format!("tag insert failed: {e}")))?;
         }
         for dep in &t.deps {
             tx.execute(
-                "INSERT OR IGNORE INTO deps(task_id, depends_on_id) VALUES(?1, ?2)",
-                params![t.id, dep],
+                "INSERT OR IGNORE INTO deps(task_uuid, depends_on_uuid) VALUES(?1, ?2)",
+                params![t.uuid, dep],
             )
             .map_err(|e| system(format!("dep insert failed: {e}")))?;
         }
     }
     tx.commit()
         .map_err(|e| system(format!("commit failed: {e}")))?;
-
-    if max_id > 0 {
-        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tasks'", [])
-            .map_err(|e| system(format!("clear sqlite_sequence failed: {e}")))?;
-        conn.execute(
-            "INSERT INTO sqlite_sequence(name, seq) VALUES('tasks', ?1)",
-            params![max_id],
-        )
-        .map_err(|e| system(format!("restore sqlite_sequence failed: {e}")))?;
-    }
     Ok(())
 }

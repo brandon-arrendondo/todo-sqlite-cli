@@ -83,9 +83,9 @@ pub enum Command {
         /// Priority: `1`..`5` or `P1`..`P5` (1 = highest, 3 = default).
         #[arg(long, value_parser = parse_priority, default_value = "3")]
         priority: i64,
-        /// Mark this task as blocked by another task ID. Repeatable.
+        /// Mark this task as blocked by another task ID (or full UUID). Repeatable.
         #[arg(long = "depends-on", value_name = "ID")]
-        depends_on: Vec<i64>,
+        depends_on: Vec<String>,
         /// Immediately move the new task to in-progress (auto-pauses any prior in-progress task).
         #[arg(long)]
         start: bool,
@@ -131,8 +131,8 @@ pub enum Command {
 
     /// Move a task to in-progress. Auto-pauses any prior in-progress task to `partial` (preserves its started_at).
     Start {
-        /// Task ID to start.
-        id: i64,
+        /// Task ID (or full UUID) to start.
+        id: String,
         /// Allow more than one in-progress task at a time and ignore unmet dependencies.
         #[arg(long)]
         force: bool,
@@ -140,20 +140,20 @@ pub enum Command {
 
     /// Move an in-progress task to `partial`. Preserves started_at so it can be resumed via `start`.
     Stop {
-        /// Task ID to pause.
-        id: i64,
+        /// Task ID (or full UUID) to pause.
+        id: String,
     },
 
     /// Move a task back to pending and clear started_at. Discards a start that turned out to be wrong.
     Revert {
-        /// Task ID to revert.
-        id: i64,
+        /// Task ID (or full UUID) to revert.
+        id: String,
     },
 
     /// Mark a task done. Idempotent — calling it on a task already in the target status does not rewrite completed_at and exits 0.
     Done {
-        /// Task ID to mark done.
-        id: i64,
+        /// Task ID (or full UUID) to mark done.
+        id: String,
         /// Close the task as `rejected` (declined / won't-do) instead of `done`. Sets completed_at but does NOT unblock dependents.
         #[arg(long)]
         rejected: bool,
@@ -161,8 +161,9 @@ pub enum Command {
 
     /// Show task details. Terse-by-default: fields holding default values (status=pending, priority=P3) are omitted.
     Show {
-        /// Task ID to show.
-        id: i64,
+        /// Task ID (or full UUID) to show. Display ids can collide across a
+        /// merge; an ambiguous id lists every match with its full UUID.
+        id: String,
         /// Print all fields, including default values (status=pending, priority=P3) and created_at.
         #[arg(long)]
         verbose: bool,
@@ -174,8 +175,8 @@ pub enum Command {
 
     /// Edit an existing task. Provide one or more of the flags below.
     Edit {
-        /// Task ID to edit.
-        id: i64,
+        /// Task ID (or full UUID) to edit.
+        id: String,
         /// New title.
         #[arg(long)]
         title: Option<String>,
@@ -197,12 +198,12 @@ pub enum Command {
         /// Detach a tag. Repeatable. No-op if the tag is not attached.
         #[arg(long = "rm-tag", value_name = "TAG")]
         rm_tag: Vec<String>,
-        /// Add a dependency edge (this task is blocked by ID). Repeatable; rejects cycles.
+        /// Add a dependency edge (this task is blocked by ID or full UUID). Repeatable; rejects cycles.
         #[arg(long = "add-dep", value_name = "ID")]
-        add_dep: Vec<i64>,
-        /// Remove a dependency edge. Repeatable.
+        add_dep: Vec<String>,
+        /// Remove a dependency edge (ID or full UUID). Repeatable.
         #[arg(long = "rm-dep", value_name = "ID")]
-        rm_dep: Vec<i64>,
+        rm_dep: Vec<String>,
         /// Mark this task as a gate (see `add --gate`). Mutually exclusive with `--no-gate`.
         #[arg(long, conflicts_with = "no_gate")]
         gate: bool,
@@ -211,10 +212,13 @@ pub enum Command {
         no_gate: bool,
     },
 
-    /// Delete a task. Cascades to associated tags and dependency edges. IDs are never reused.
+    /// Delete a task. Cascades to associated tags and dependency edges.
+    /// The display ID is not reserved after deletion — a later `add` may
+    /// reuse it if it was the highest one in use (identity is the task's
+    /// UUID, not the display ID; see `show`).
     Rm {
-        /// Task ID to delete.
-        id: i64,
+        /// Task ID (or full UUID) to delete.
+        id: String,
     },
 
     /// Export completed tasks. Default JSON shape: `{"completed": [{"date": "YYYY-MM-DD", "tasks": [...]}, ...]}`, descending by date, compact.
@@ -275,11 +279,15 @@ pub enum Command {
     },
 
     /// Merge two databases (optionally against a common-ancestor --base for
-    /// a real 3-way merge). New tasks union in; tasks known to --base are
-    /// reconciled per-field, preferring the changed side, or --ours on a
-    /// genuine same-field conflict (which gets tagged `merge-conflict` for
-    /// review). Without --base, every overlapping id is treated as an
-    /// unrelated task and --theirs' copy is renumbered.
+    /// a real 3-way merge). Identity is each task's UUID, so a colliding
+    /// display ID never causes data loss; new tasks union in, and tasks
+    /// known to --base are reconciled per-field, preferring the changed
+    /// side, or --ours on a genuine same-field conflict (tagged
+    /// `merge-conflict` for review). Without --base, a UUID shared by both
+    /// sides is still reconciled the same way; a real field disagreement
+    /// with no common ancestor to attribute it to is also a conflict. Two
+    /// tasks may end up sharing a display ID after merging — `show <id>`
+    /// lists both if that happens; use the full UUID to pick one.
     Merge {
         /// Common-ancestor database. Omit for a 2-way union merge.
         #[arg(long, value_name = "PATH")]
@@ -310,6 +318,12 @@ pub enum Command {
         /// %B — "theirs" temp file.
         theirs: PathBuf,
     },
+
+    /// Post-merge (and general) sanity checks: duplicate display ids,
+    /// unresolved `merge-conflict` tags, orphaned tag/dep rows, self-deps,
+    /// and dependency cycles. Read-only. Exits 1 if anything is found so it
+    /// can gate a script (e.g. run after `git merge`/`pull`).
+    Doctor,
 
     /// One-time setup: registers this binary as the git merge driver for the
     /// resolved database (adds a `.gitattributes` line + repo-local git
