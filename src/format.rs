@@ -15,6 +15,22 @@ fn format_deps(task: &Task, sep: &str) -> String {
     format!("{}{}", deps.join(sep), suffix)
 }
 
+fn format_related(task: &Task, sep: &str) -> String {
+    task.related
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// ` @location` suffix for table/markdown title display, or "" when unset.
+fn location_suffix(task: &Task) -> String {
+    match &task.location {
+        Some(l) if !l.is_empty() => format!(" @{l}"),
+        _ => String::new(),
+    }
+}
+
 /// Group tasks by their completion date (the date portion of `completed_at`,
 /// or "" when absent), ordered by date ascending.
 fn group_by_completed_date(tasks: &[Task]) -> std::collections::BTreeMap<String, Vec<&Task>> {
@@ -102,6 +118,12 @@ pub fn print_task_text(task: &Task, verbose: bool) {
     if !task.depends_on.is_empty() {
         println!("Dependencies: {}", format_deps(task, ", "));
     }
+    if !task.related.is_empty() {
+        println!("Related: {}", format_related(task, ", "));
+    }
+    if let Some(l) = &task.location {
+        println!("Location: {l}");
+    }
     if !task.tags.is_empty() {
         println!("Tags: {}", task.tags.join(", "));
     }
@@ -132,12 +154,13 @@ pub fn print_tasks_table(tasks: &[Task]) {
             format!(" [{}]", t.tags.join(","))
         };
         println!(
-            "{:>4}  {:<11}  P{}  {}{}{}{}",
+            "{:>4}  {:<11}  P{}  {}{}{}{}{}",
             t.id,
             t.status,
             t.priority,
             gate_prefix(t),
             t.title,
+            location_suffix(t),
             tags,
             blocked
         );
@@ -161,6 +184,12 @@ pub fn markdown_task(task: &Task) -> String {
             "- **Dependencies:** {}\n",
             format_deps(task, ", ")
         ));
+    }
+    if !task.related.is_empty() {
+        buf.push_str(&format!("- **Related:** {}\n", format_related(task, ", ")));
+    }
+    if let Some(l) = &task.location {
+        buf.push_str(&format!("- **Location:** {l}\n"));
     }
     buf.push_str(&format!("- **Created:** {}\n", task.created_at));
     if let Some(s) = &task.started_at {
@@ -229,6 +258,7 @@ fn markdown_todo_terse(tasks: &[Task]) -> String {
         }
         head.push_str(gate_prefix(t));
         head.push_str(&t.title);
+        head.push_str(&location_suffix(t));
         buf.push_str(&head);
         buf.push('\n');
         if !t.tags.is_empty() {
@@ -254,7 +284,12 @@ fn markdown_todo_verbose(tasks: &[Task]) -> String {
     buf.push_str("# TODO\n\n");
     for t in tasks {
         buf.push_str(&format!("# Task ID: {}\n", t.id));
-        buf.push_str(&format!("# Title: {}{}\n", gate_prefix(t), t.title));
+        buf.push_str(&format!(
+            "# Title: {}{}{}\n",
+            gate_prefix(t),
+            t.title,
+            location_suffix(t)
+        ));
         buf.push_str(&format!("# Status: {}\n", t.status));
         buf.push_str(&format!("# Priority: P{}\n", t.priority));
         if !t.depends_on.is_empty() {

@@ -74,6 +74,34 @@ listing it but never marks it `stale`, since indefinite openness is the
 correct state for a gate, not backlog rot; `list`/`show`/`export-todo`
 prefix `[GATE]` before its title.
 
+## Related tasks & location
+
+A free-text "see task 12" comment goes stale the moment a merge renumbers or
+duplicates display ids. `--related`/`--add-related`/`--rm-related` link two
+tasks by uuid instead, so the connection survives merges and `renumber` —
+`show` always resolves it to each task's *current* display id. The link is
+mutual: linking A to B makes it show up on both tasks' `show` output without
+touching B directly. It's deliberately left out of `list`/`export-*` output
+(where the volume would add noise) and only surfaces on `show`.
+
+Some tasks also can't be done just anywhere — `--location` records where
+(e.g. a specific node or site), separately from `--details`/`--tag` so it
+doesn't get lost in prose or lose its meaning as a tag. It shows up in
+`list` as an `@location` suffix on the title (todo.txt's `@context`
+convention) and as a `Location:` line on `show`.
+
+```
+$ todo-sqlite-cli add "replace intake filter" --location warehouse-3
+$ todo-sqlite-cli add "audit warehouse-3 filters" --related 1
+$ todo-sqlite-cli list
+   1  pending      P3  replace intake filter @warehouse-3
+   2  pending      P3  audit warehouse-3 filters
+$ todo-sqlite-cli show 1
+...
+Related: 2
+Location: warehouse-3
+```
+
 ## Merging
 
 The DB can be checked into git like any other file — many projects want the
@@ -91,7 +119,7 @@ $ todo-sqlite-cli install-merge-driver   # one-time, per clone
 That adds `<db> merge=todo-sqlite-cli` to `.gitattributes` (tracked — share
 it) and registers the driver in local git config (each collaborator runs
 this once). After that, `git merge`/`pull`/`rebase` just resolves the file:
-a task only one side touched keeps that side's change; tags/deps union;
+a task only one side touched keeps that side's change; tags/deps/related union;
 status picks whichever side is further along (`done`/`rejected` beat
 `in-progress`/`partial` beat `pending`); a genuine same-field clash (e.g.
 both sides gave a task a different title) keeps the current branch's value

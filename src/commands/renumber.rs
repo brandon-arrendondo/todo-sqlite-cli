@@ -49,7 +49,10 @@ pub fn run(db_path: &Path, json: bool, id: &str, new_id: i64, force: bool) -> Cl
         )
         .map_err(|e| system(format!("update failed: {e}")))?;
     if n == 0 {
-        return Err(system(format!("task {} vanished mid-operation", target.uuid)));
+        return Err(system(format!(
+            "task {} vanished mid-operation",
+            target.uuid
+        )));
     }
 
     if json {

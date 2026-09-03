@@ -76,6 +76,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             depends_on,
             start,
             gate,
+            location,
+            related,
         } => commands::add::run(
             db_path,
             json,
@@ -86,6 +88,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &depends_on,
             start,
             gate,
+            location.as_deref(),
+            &related,
         ),
         Command::List {
             status,
@@ -133,6 +137,10 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             rm_dep,
             gate,
             no_gate,
+            location,
+            clear_location,
+            add_related,
+            rm_related,
         } => commands::edit::run(
             db_path,
             json,
@@ -148,6 +156,10 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &rm_dep,
             gate,
             no_gate,
+            location.as_deref(),
+            clear_location,
+            &add_related,
+            &rm_related,
         ),
         Command::Renumber { id, new_id, force } => {
             commands::renumber::run(db_path, json, &id, new_id, force)

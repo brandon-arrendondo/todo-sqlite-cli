@@ -25,8 +25,10 @@ struct RawTask {
     created_at: String,
     started_at: Option<String>,
     completed_at: Option<String>,
+    location: Option<String>,
     tags: Vec<String>,
     deps: Vec<String>,
+    related: Vec<String>,
 }
 
 /// The merged, final form of one task, ready to write to the output db.
@@ -42,8 +44,10 @@ struct MergedTask {
     created_at: String,
     started_at: Option<String>,
     completed_at: Option<String>,
+    location: Option<String>,
     tags: HashSet<String>,
     deps: HashSet<String>,
+    related: HashSet<String>,
     conflict: bool,
 }
 
@@ -208,6 +212,30 @@ pub fn merge_databases(
         t.deps = kept;
     }
 
+    // Drop self-links and links to tasks that don't exist in the merged
+    // set, then symmetrize: `related` isn't a DAG (no cycle concept), but
+    // three-way merging unions each task's own edge set independently, so
+    // a link recorded on only one side (e.g. a db hand-edited outside this
+    // tool) must be mirrored back onto its target to preserve the "if A
+    // relates to B, B relates to A" invariant every reader/writer relies on.
+    for t in merged.iter_mut() {
+        t.related.retain(|r| *r != t.uuid && alive.contains(r));
+    }
+    let mirror: Vec<(String, String)> = merged
+        .iter()
+        .flat_map(|t| t.related.iter().map(move |r| (t.uuid.clone(), r.clone())))
+        .collect();
+    let index_by_uuid: HashMap<String, usize> = merged
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.uuid.clone(), i))
+        .collect();
+    for (from, to) in &mirror {
+        if let Some(&idx) = index_by_uuid.get(to) {
+            merged[idx].related.insert(from.clone());
+        }
+    }
+
     write_output(&merged, out_path, opts)?;
     Ok(report)
 }
@@ -241,6 +269,7 @@ fn fields_equal(a: &RawTask, b: &RawTask) -> bool {
         && a.status == b.status
         && a.priority == b.priority
         && a.is_gate == b.is_gate
+        && a.location == b.location
 }
 
 fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
@@ -255,8 +284,10 @@ fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
         created_at: t.created_at.clone(),
         started_at: t.started_at.clone(),
         completed_at: t.completed_at.clone(),
+        location: t.location.clone(),
         tags: t.tags.iter().cloned().collect(),
         deps: t.deps.iter().cloned().collect(),
+        related: t.related.iter().cloned().collect(),
         conflict,
     }
 }
@@ -389,6 +420,25 @@ fn merge_common(
         ours.priority.min(theirs.priority)
     };
 
+    // location
+    let location = if ours.location == theirs.location {
+        ours.location.clone()
+    } else if ours.location == base.location {
+        theirs.location.clone()
+    } else if theirs.location == base.location {
+        ours.location.clone()
+    } else {
+        conflict = true;
+        report.conflicts.push(ConflictNote {
+            task_id: base.id,
+            field: "location".into(),
+            ours: ours.location.clone().unwrap_or_default(),
+            theirs: theirs.location.clone().unwrap_or_default(),
+            resolution: "kept ours".into(),
+        });
+        ours.location.clone()
+    };
+
     // is_gate
     let is_gate = if ours.is_gate == theirs.is_gate {
         ours.is_gate
@@ -420,6 +470,12 @@ fn merge_common(
         .chain(theirs.deps.iter())
         .cloned()
         .collect();
+    let related: HashSet<String> = ours
+        .related
+        .iter()
+        .chain(theirs.related.iter())
+        .cloned()
+        .collect();
 
     MergedTask {
         uuid: base.uuid.clone(),
@@ -434,8 +490,10 @@ fn merge_common(
         created_at: base.created_at.clone(),
         started_at,
         completed_at,
+        location,
         tags,
         deps,
+        related,
         conflict,
     }
 }
@@ -471,6 +529,7 @@ fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeRepo
     let status = field!("status", status);
     let priority = field!("priority", priority);
     let is_gate = field!("is_gate", is_gate);
+    let location = field!("location", location);
 
     let (started_at, completed_at) = if status == ours.status {
         (ours.started_at.clone(), ours.completed_at.clone())
@@ -490,6 +549,12 @@ fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeRepo
         .chain(theirs.deps.iter())
         .cloned()
         .collect();
+    let related: HashSet<String> = ours
+        .related
+        .iter()
+        .chain(theirs.related.iter())
+        .cloned()
+        .collect();
 
     MergedTask {
         uuid: ours.uuid.clone(),
@@ -502,8 +567,10 @@ fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeRepo
         created_at: ours.created_at.clone(),
         started_at,
         completed_at,
+        location,
         tags,
         deps,
+        related,
         conflict,
     }
 }
@@ -549,8 +616,10 @@ fn load_all(conn: &Connection) -> CliResult<Vec<RawTask>> {
                 created_at: r.get(7)?,
                 started_at: r.get(8)?,
                 completed_at: r.get(9)?,
+                location: r.get(10)?,
                 tags: Vec::new(),
                 deps: Vec::new(),
+                related: Vec::new(),
             })
         })
         .map_err(|e| system(format!("query failed: {e}")))?;
@@ -561,6 +630,7 @@ fn load_all(conn: &Connection) -> CliResult<Vec<RawTask>> {
     for t in out.iter_mut() {
         t.tags = db::load_tags(conn, &t.uuid)?;
         t.deps = db::load_dep_uuids(conn, &t.uuid)?;
+        t.related = db::load_related_uuids(conn, &t.uuid)?;
     }
     Ok(out)
 }
@@ -583,8 +653,8 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
     // that sorts later in `merged`, and depends_on_uuid is a foreign key.
     for t in merged {
         tx.execute(
-            "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at, location)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 t.uuid,
                 t.id,
@@ -596,6 +666,7 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
                 t.created_at,
                 t.started_at,
                 t.completed_at,
+                t.location,
             ],
         )
         .map_err(|e| system(format!("task insert failed: {e}")))?;
@@ -621,6 +692,13 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
                 params![t.uuid, dep],
             )
             .map_err(|e| system(format!("dep insert failed: {e}")))?;
+        }
+        for r in &t.related {
+            tx.execute(
+                "INSERT OR IGNORE INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+                params![t.uuid, r],
+            )
+            .map_err(|e| system(format!("related insert failed: {e}")))?;
         }
     }
     tx.commit()

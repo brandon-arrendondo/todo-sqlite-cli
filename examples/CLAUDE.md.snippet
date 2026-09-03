@@ -92,6 +92,20 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli edit <id> --title "..."` / `--priority P2` — rename or
   reprioritize.
 
+**Cross-referencing tasks — don't write "see task 12" in `details`:**
+
+- A plain-text id reference in `details` goes stale the moment a merge
+  renumbers or duplicates display ids. Use `--related <id>` on `add`, or
+  `edit <id> --add-related <other-id>` / `--rm-related <other-id>`, instead
+  — it's stored by uuid and always resolves to the *current* display id.
+  The link is mutual: linking A to B also makes it show up on `show B`
+  without a separate edit. It intentionally does not show up in
+  `list`/`export-*`, only in `show <id>`.
+- `--location <text>` on `add`/`edit` (`--clear-location` to unset) records
+  where the work must physically/logically happen (e.g. a specific node) —
+  use this instead of burying it in `details` or a `--tag`. It shows as an
+  `@location` suffix in `list` and a `Location:` line in `show`.
+
 **Gates — a task that's a checkpoint, not work:**
 
 - Use `add "condition prose" --gate --details "..."` when the "task" is

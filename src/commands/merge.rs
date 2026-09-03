@@ -28,7 +28,7 @@ pub fn run(
         )));
     }
 
-    let base_usable = base.is_some_and(|p| is_usable_db(p));
+    let base_usable = base.is_some_and(is_usable_db);
 
     db::require_matching_schema_versions(&[
         ("ours", db::peek_schema_version(ours)?),

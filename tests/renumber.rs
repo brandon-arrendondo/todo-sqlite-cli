@@ -14,7 +14,10 @@ fn renumber_reassigns_display_id() {
         .unwrap();
     assert!(out.status.success(), "renumber failed: {:?}", out);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains(&format!("renumbered {a} -> 42")), "stdout: {stdout:?}");
+    assert!(
+        stdout.contains(&format!("renumbered {a} -> 42")),
+        "stdout: {stdout:?}"
+    );
 
     let out = sb.cmd().args(["show", "42", "--json"]).output().unwrap();
     assert!(out.status.success(), "show failed: {:?}", out);
@@ -52,15 +55,15 @@ fn renumber_by_uuid_resolves_a_duplicate_display_id() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("ambiguous"));
 
-    let out = sb
-        .cmd()
-        .args(["renumber", &b_uuid, "99"])
-        .output()
-        .unwrap();
+    let out = sb.cmd().args(["renumber", &b_uuid, "99"]).output().unwrap();
     assert!(out.status.success(), "renumber failed: {:?}", out);
 
     let out = sb.cmd().arg("doctor").output().unwrap();
-    assert!(out.status.success(), "doctor failed after renumber: {:?}", out);
+    assert!(
+        out.status.success(),
+        "doctor failed after renumber: {:?}",
+        out
+    );
 }
 
 #[test]

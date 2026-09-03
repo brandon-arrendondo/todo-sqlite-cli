@@ -22,6 +22,10 @@ pub fn run(
     rm_dep: &[String],
     gate: bool,
     no_gate: bool,
+    location: Option<&str>,
+    clear_location: bool,
+    add_related: &[String],
+    rm_related: &[String],
 ) -> CliResult<()> {
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -38,6 +42,8 @@ pub fn run(
     // uuid.
     let add_dep_uuids = resolve_deps(&conn, &uuid, add_dep)?;
     let rm_dep_uuids = resolve_deps(&conn, &uuid, rm_dep)?;
+    let add_related_uuids = resolve_related(&conn, &uuid, add_related)?;
+    let rm_related_uuids = resolve_related(&conn, &uuid, rm_related)?;
 
     let tx = conn
         .transaction()
@@ -49,6 +55,8 @@ pub fn run(
     apply_gate(&tx, &uuid, gate, no_gate)?;
     apply_tags(&tx, &uuid, add_tag, rm_tag)?;
     apply_deps(&tx, &uuid, &add_dep_uuids, &rm_dep_uuids)?;
+    apply_location(&tx, &uuid, location, clear_location)?;
+    apply_related(&tx, &uuid, &add_related_uuids, &rm_related_uuids)?;
 
     tx.commit()
         .map_err(|e| system(format!("commit failed: {e}")))?;
@@ -75,6 +83,24 @@ fn resolve_deps(
         let t = db::resolve_one(conn, r).map_err(|e| user(format!("dependency {r}: {e}")))?;
         if t.uuid == self_uuid {
             return Err(user("a task cannot depend on itself"));
+        }
+        out.push(t.uuid);
+    }
+    Ok(out)
+}
+
+/// Resolve each `--add-related`/`--rm-related` argument to a specific task
+/// uuid, rejecting self-links up front (mirrors `resolve_deps`).
+fn resolve_related(
+    conn: &rusqlite::Connection,
+    self_uuid: &str,
+    raw: &[String],
+) -> CliResult<Vec<String>> {
+    let mut out = Vec::new();
+    for r in raw {
+        let t = db::resolve_one(conn, r).map_err(|e| user(format!("related task {r}: {e}")))?;
+        if t.uuid == self_uuid {
+            return Err(user("a task cannot be related to itself"));
         }
         out.push(t.uuid);
     }
@@ -224,6 +250,71 @@ fn apply_deps(
             params![uuid, dep],
         )
         .map_err(|e| system(format!("dep delete failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Apply the mutually-exclusive location edits, same mutex pattern as
+/// `apply_details`'s `--details`/`--clear-details`.
+fn apply_location(
+    tx: &rusqlite::Transaction,
+    uuid: &str,
+    location: Option<&str>,
+    clear_location: bool,
+) -> CliResult<()> {
+    if location.is_some() && clear_location {
+        return Err(user(
+            "--location and --clear-location are mutually exclusive",
+        ));
+    }
+    if let Some(l) = location {
+        tx.execute(
+            "UPDATE tasks SET location = ?1 WHERE uuid = ?2",
+            params![l, uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    if clear_location {
+        tx.execute(
+            "UPDATE tasks SET location = NULL WHERE uuid = ?1",
+            params![uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Add/remove mutual "see also" links. Both directions are always written
+/// (or removed) together so either task's `show` output reflects the link.
+fn apply_related(
+    tx: &rusqlite::Transaction,
+    uuid: &str,
+    add_related: &[String],
+    rm_related: &[String],
+) -> CliResult<()> {
+    for r in add_related {
+        tx.execute(
+            "INSERT OR IGNORE INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+            params![uuid, r],
+        )
+        .map_err(|e| system(format!("related insert failed: {e}")))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+            params![r, uuid],
+        )
+        .map_err(|e| system(format!("related insert failed: {e}")))?;
+    }
+    for r in rm_related {
+        tx.execute(
+            "DELETE FROM related WHERE task_uuid = ?1 AND related_uuid = ?2",
+            params![uuid, r],
+        )
+        .map_err(|e| system(format!("related delete failed: {e}")))?;
+        tx.execute(
+            "DELETE FROM related WHERE task_uuid = ?1 AND related_uuid = ?2",
+            params![r, uuid],
+        )
+        .map_err(|e| system(format!("related delete failed: {e}")))?;
     }
     Ok(())
 }

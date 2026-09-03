@@ -1,4 +1,4 @@
-.TH TODO-SQLITE-CLI 1 "2026-08-27" "todo-sqlite-cli 3.1.0" "User Commands"
+.TH TODO-SQLITE-CLI 1 "2026-09-03" "todo-sqlite-cli 3.2.0" "User Commands"
 .SH NAME
 todo-sqlite-cli \- per-project TODO list CLI backed by SQLite
 .SH SYNOPSIS
@@ -71,6 +71,18 @@ described in
 .BR \-\-details ,
 not work to be done; see
 .B GATES
+below),
+.B \-\-location \fITEXT\fR
+(where this work must be done, e.g. a specific node/site; shown as an
+.I @location
+suffix in
+.BR list ),
+.B \-\-related \fIID\fR
+(repeatable; link this task to another as related work \(em mutual, shows on
+both tasks'
+.BR show ;
+see
+.B RELATED TASKS & LOCATION
 below).
 .TP
 .B list
@@ -165,6 +177,14 @@ to print every field including
 selects the output format
 .RI ( text
 is the default).
+Includes a
+.I Related:
+line (linked tasks' current display ids) and a
+.I Location:
+line when set \(em these are the only commands where related links
+appear; see
+.B RELATED TASKS & LOCATION
+below.
 .TP
 .B edit \fIID\fR
 Edit an existing task. Flags:
@@ -191,7 +211,16 @@ and
 (mark this task as a gate; mutually exclusive with
 .BR \-\-no-gate ),
 .B \-\-no-gate
-(demote a gate back to a regular task).
+(demote a gate back to a regular task),
+.B \-\-location \fITEXT\fR
+(mutually exclusive with
+.BR \-\-clear-location ),
+.B \-\-clear-location,
+.B \-\-add-related \fIID\fR
+(repeatable; rejects self-links; mutual \(em also links the other task back
+to this one),
+.B \-\-rm-related \fIID\fR
+(repeatable; removes both directions).
 .TP
 .B rm \fIID\fR
 Delete a task. Cascades to associated tags and dependency edges.
@@ -216,7 +245,9 @@ sharing it; without it, that case is a user error.
 .B doctor
 Post-merge (and general) sanity checks: duplicate display ids, unresolved
 .I merge-conflict
-tags, orphaned tag/dep rows, self-deps, and dependency cycles. Read-only.
+tags, orphaned tag/dep/related rows, self-deps, self-related rows,
+asymmetric related rows (a link missing its mirrored reverse row), and
+dependency cycles. Read-only.
 Exits 1 if anything is found so it can gate a script (e.g. after
 .BR "git merge" / pull ).
 A duplicate display id is expected occasionally after a merge and is not
@@ -386,6 +417,62 @@ boolean on every task object under
 does not change: a gate counts toward
 .IR backlog / in_progress / done
 like any other task.
+.SH RELATED TASKS & LOCATION
+A free-text "see task 12" comment in
+.B details
+goes stale the moment a merge renumbers or duplicates display ids.
+.B \-\-related
+(on
+.BR add )
+and
+.BR \-\-add-related / \-\-rm-related
+(on
+.BR edit )
+link two tasks by uuid instead, so the connection survives merges and
+.BR renumber ;
+.B show
+always resolves it to each task's
+.I current
+display id.
+.PP
+The link is
+.I mutual
+\(em linking task A to B also links B to A, so
+.B "edit A \-\-add-related B"
+makes the link show up on
+.B "show B"
+too without touching B directly, and
+.B "edit A \-\-rm-related B"
+removes it from both.
+.B \-\-add-related
+rejects linking a task to itself. Related links are deliberately left out
+of
+.BR list / export-todo / export-completed / aging
+output (where the volume would add noise not worth the tokens) and only
+surface on
+.BR show .
+.PP
+.B \-\-location \fITEXT\fR
+(on
+.BR add " or " edit ,
+with
+.B \-\-clear-location
+to unset it on
+.BR edit )
+records where a task's work must physically or logically happen, separate
+from
+.BR details / \-\-tag
+so it doesn't get lost in prose or lose its meaning as a tag. It shows up
+as an
+.I @location
+suffix on the title in
+.B list
+(todo.txt's
+.I @context
+convention) and as a
+.I Location:
+line on
+.BR show .
 .SH DATABASE RESOLUTION
 The database path is resolved in this order, with the first match winning:
 .IP 1. 4
@@ -466,10 +553,11 @@ in place.
 aborts (exit 1, nothing written) on the first genuine conflict instead of
 auto-resolving and flagging it.
 .PP
-Tags, priority, and dependency edges union or auto-resolve without ever
-being flagged. A genuine conflict \(em both sides changed the same field to
-different values in a way that can't be ranked (title, or the rare
-diverging
+Tags, priority, and dependency and related-task edges union or auto-resolve
+without ever being flagged. A genuine conflict \(em both sides changed the
+same field to different values in a way that can't be ranked (title,
+.BR location ,
+or the rare diverging
 .B is_gate
 flip) \(em keeps
 .B \-\-ours

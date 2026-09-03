@@ -24,6 +24,9 @@ struct DoctorReport {
     orphaned_dep_rows: i64,
     self_deps: i64,
     dependency_cycles: Vec<TaskRef>,
+    orphaned_related_rows: i64,
+    self_related: i64,
+    asymmetric_related_rows: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,9 @@ impl DoctorReport {
             && self.orphaned_dep_rows == 0
             && self.self_deps == 0
             && self.dependency_cycles.is_empty()
+            && self.orphaned_related_rows == 0
+            && self.self_related == 0
+            && self.asymmetric_related_rows == 0
     }
 }
 
@@ -122,6 +128,38 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     report.self_deps = conn
         .query_row(
             "SELECT COUNT(*) FROM deps WHERE task_uuid = depends_on_uuid",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| system(format!("query failed: {e}")))?;
+
+    // `related` links should always be written mirrored (both directions)
+    // and never point at themselves or at a missing task — `add`/`edit`/
+    // merge all maintain that, so a hit here means the db was hand-edited
+    // or touched by other tooling.
+    report.orphaned_related_rows = conn
+        .query_row(
+            "SELECT COUNT(*) FROM related
+             WHERE task_uuid NOT IN (SELECT uuid FROM tasks)
+                OR related_uuid NOT IN (SELECT uuid FROM tasks)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| system(format!("query failed: {e}")))?;
+    report.self_related = conn
+        .query_row(
+            "SELECT COUNT(*) FROM related WHERE task_uuid = related_uuid",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| system(format!("query failed: {e}")))?;
+    report.asymmetric_related_rows = conn
+        .query_row(
+            "SELECT COUNT(*) FROM related r
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM related r2
+                 WHERE r2.task_uuid = r.related_uuid AND r2.related_uuid = r.task_uuid
+             )",
             [],
             |r| r.get(0),
         )
@@ -259,6 +297,9 @@ fn print_report(json: bool, report: &DoctorReport) {
             "orphaned_dep_rows": report.orphaned_dep_rows,
             "self_deps": report.self_deps,
             "dependency_cycles": report.dependency_cycles,
+            "orphaned_related_rows": report.orphaned_related_rows,
+            "self_related": report.self_related,
+            "asymmetric_related_rows": report.asymmetric_related_rows,
         });
         println!("{}", serde_json::to_string(&v).unwrap());
         return;
@@ -315,5 +356,23 @@ fn print_report(json: bool, report: &DoctorReport) {
         for t in &report.dependency_cycles {
             println!("  id={} uuid={} title={}", t.id, t.uuid, t.title);
         }
+    }
+    if report.orphaned_related_rows > 0 {
+        println!(
+            "orphaned related rows (task_uuid/related_uuid with no matching task): {}",
+            report.orphaned_related_rows
+        );
+    }
+    if report.self_related > 0 {
+        println!(
+            "self-related rows (task_uuid = related_uuid): {}",
+            report.self_related
+        );
+    }
+    if report.asymmetric_related_rows > 0 {
+        println!(
+            "asymmetric related rows (missing the mirrored reverse row): {}",
+            report.asymmetric_related_rows
+        );
     }
 }

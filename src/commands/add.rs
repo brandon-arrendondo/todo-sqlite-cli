@@ -17,6 +17,8 @@ pub fn run(
     depends_on: &[String],
     start: bool,
     gate: bool,
+    location: Option<&str>,
+    related: &[String],
 ) -> CliResult<()> {
     if title.trim().is_empty() {
         return Err(user("title must not be empty"));
@@ -33,6 +35,13 @@ pub fn run(
         let dep = db::resolve_one(&conn, dep_id)
             .map_err(|e| user(format!("dependency {dep_id}: {e}")))?;
         dep_uuids.push(dep.uuid);
+    }
+
+    let mut related_uuids = Vec::new();
+    for related_id in related {
+        let r = db::resolve_one(&conn, related_id)
+            .map_err(|e| user(format!("related task {related_id}: {e}")))?;
+        related_uuids.push(r.uuid);
     }
 
     let tx = conn
@@ -60,8 +69,8 @@ pub fn run(
         .map_err(|e| system(format!("next id query failed: {e}")))?;
 
     tx.execute(
-        "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, location)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             uuid,
             id,
@@ -72,6 +81,7 @@ pub fn run(
             gate,
             now,
             started_at,
+            location,
         ],
     )
     .map_err(|e| system(format!("insert failed: {e}")))?;
@@ -89,6 +99,18 @@ pub fn run(
             params![uuid, dep],
         )
         .map_err(|e| system(format!("dep insert failed: {e}")))?;
+    }
+    for r in dedup(&related_uuids) {
+        tx.execute(
+            "INSERT OR IGNORE INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+            params![uuid, r],
+        )
+        .map_err(|e| system(format!("related insert failed: {e}")))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+            params![r, uuid],
+        )
+        .map_err(|e| system(format!("related insert failed: {e}")))?;
     }
 
     tx.commit()

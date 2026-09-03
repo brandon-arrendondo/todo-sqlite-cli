@@ -49,6 +49,80 @@ fn duplicate_display_id_is_flagged_and_exits_nonzero() {
 }
 
 #[test]
+fn asymmetric_related_row_is_flagged() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+    let b = sb.add("b");
+
+    // `edit --add-related` always mirrors both directions — hand-insert only
+    // one to simulate a db touched by other tooling.
+    let conn = rusqlite::Connection::open(&sb.db).unwrap();
+    let a_uuid: String = conn
+        .query_row(
+            "SELECT uuid FROM tasks WHERE id = ?1",
+            rusqlite::params![a],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let b_uuid: String = conn
+        .query_row(
+            "SELECT uuid FROM tasks WHERE id = ?1",
+            rusqlite::params![b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO related(task_uuid, related_uuid) VALUES(?1, ?2)",
+        rusqlite::params![a_uuid, b_uuid],
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = sb.cmd().arg("doctor").output().unwrap();
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("asymmetric related rows"),
+        "stdout: {stdout:?}"
+    );
+
+    let json_out = sb.cmd().args(["doctor", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(v["clean"], false);
+    assert_eq!(v["asymmetric_related_rows"].as_i64().unwrap(), 1);
+}
+
+#[test]
+fn orphaned_related_row_is_flagged() {
+    let sb = Sandbox::new();
+    let a = sb.add("a");
+
+    let conn = rusqlite::Connection::open(&sb.db).unwrap();
+    let a_uuid: String = conn
+        .query_row(
+            "SELECT uuid FROM tasks WHERE id = ?1",
+            rusqlite::params![a],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    conn.execute(
+        "INSERT INTO related(task_uuid, related_uuid) VALUES(?1, 'does-not-exist')",
+        rusqlite::params![a_uuid],
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = sb.cmd().arg("doctor").output().unwrap();
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("orphaned related rows"),
+        "stdout: {stdout:?}"
+    );
+}
+
+#[test]
 fn unresolved_merge_conflict_tag_is_flagged() {
     let sb = Sandbox::new();
     let id = sb.add("conflicted");

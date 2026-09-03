@@ -92,6 +92,12 @@ pub enum Command {
         /// Mark this task as a gate: a checkpoint on a condition becoming true (described in --details), not work to be done. Skipped by `next`; never flagged stale by `aging`.
         #[arg(long)]
         gate: bool,
+        /// Where this work must be done (e.g. a specific node/site). Shown as an `@location` suffix in `list`.
+        #[arg(long, value_name = "TEXT")]
+        location: Option<String>,
+        /// Link this task to another (ID or full UUID) as related work. Mutual — shows up on both tasks' `show` output. Repeatable.
+        #[arg(long = "related", value_name = "ID")]
+        related: Vec<String>,
     },
 
     /// List tasks. Default shows active work (in-progress + partial + pending), in-progress first then partial then pending; within each, by priority.
@@ -210,6 +216,18 @@ pub enum Command {
         /// Unmark this task as a gate, demoting it back to a regular task.
         #[arg(long)]
         no_gate: bool,
+        /// Set where this work must be done. Mutually exclusive with `--clear-location`.
+        #[arg(long, value_name = "TEXT")]
+        location: Option<String>,
+        /// Clear the location field.
+        #[arg(long)]
+        clear_location: bool,
+        /// Link this task to another (ID or full UUID) as related work. Mutual; repeatable; rejects self-links.
+        #[arg(long = "add-related", value_name = "ID")]
+        add_related: Vec<String>,
+        /// Remove a related-work link (ID or full UUID). Repeatable. Removes both directions.
+        #[arg(long = "rm-related", value_name = "ID")]
+        rm_related: Vec<String>,
     },
 
     /// Reassign a task's display id — for resolving a duplicate id left by a

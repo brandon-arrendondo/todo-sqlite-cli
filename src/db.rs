@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{system, user, CliResult};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE tasks (
@@ -19,7 +19,8 @@ CREATE TABLE tasks (
     is_gate      INTEGER NOT NULL DEFAULT 0 CHECK(is_gate IN (0,1)),
     created_at   TEXT NOT NULL,
     started_at   TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    location     TEXT
 );
 
 CREATE TABLE tags (
@@ -35,6 +36,16 @@ CREATE TABLE deps (
     CHECK (task_uuid <> depends_on_uuid)
 );
 
+-- Non-blocking "see also" links between tasks, stored mirrored: linking A
+-- and B writes both (A,B) and (B,A) so either task's row lookup finds the
+-- other with a plain WHERE task_uuid = ? (no OR-join needed).
+CREATE TABLE related (
+    task_uuid    TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+    related_uuid TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+    PRIMARY KEY (task_uuid, related_uuid),
+    CHECK (task_uuid <> related_uuid)
+);
+
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -44,6 +55,7 @@ CREATE INDEX idx_tasks_status_priority ON tasks(status, priority, created_at);
 CREATE INDEX idx_tasks_id ON tasks(id);
 CREATE INDEX idx_tags_tag ON tags(tag);
 CREATE INDEX idx_deps_depends_on ON deps(depends_on_uuid);
+CREATE INDEX idx_related_related ON related(related_uuid);
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +95,13 @@ pub struct Task {
     pub created_at: String,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub location: Option<String>,
+    /// Display ids of mutually-linked "see also" tasks. Only populated by
+    /// `hydrate` (i.e. single-task commands like `show`/`add`/`edit`) —
+    /// list-style commands leave this empty on purpose, and it's hidden
+    /// from JSON in that case rather than printed as `[]`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<i64>,
 }
 
 pub fn now_iso() -> String {
@@ -158,6 +177,9 @@ fn migrate(conn: &Connection) -> CliResult<()> {
     }
     if current <= 4 {
         migrate_v4_to_v5(conn)?;
+    }
+    if current <= 5 {
+        migrate_v5_to_v6(conn)?;
     }
     Ok(())
 }
@@ -523,6 +545,27 @@ fn migrate_v4_to_v5(conn: &Connection) -> CliResult<()> {
     Ok(())
 }
 
+/// Adds `tasks.location` and the mirrored `related` table. Unlike v4->v5,
+/// nothing here needs a Rust-generated value, so a single SQL script
+/// suffices.
+fn migrate_v5_to_v6(conn: &Connection) -> CliResult<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tasks ADD COLUMN location TEXT;
+        CREATE TABLE related (
+            task_uuid    TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+            related_uuid TEXT NOT NULL REFERENCES tasks(uuid) ON DELETE CASCADE,
+            PRIMARY KEY (task_uuid, related_uuid),
+            CHECK (task_uuid <> related_uuid)
+        );
+        CREATE INDEX idx_related_related ON related(related_uuid);
+        UPDATE meta SET value = '6' WHERE key = 'schema_version';
+        "#,
+    )
+    .map_err(|e| system(format!("v5->v6 migration failed: {e}")))?;
+    Ok(())
+}
+
 pub fn create_schema(conn: &Connection) -> CliResult<()> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| system(format!("schema create failed: {e}")))?;
@@ -590,7 +633,7 @@ pub fn is_initialized(conn: &Connection) -> bool {
 /// this codebase uses. Shared so a query built anywhere can hand its rows
 /// straight to `row_to_task_base` instead of re-deriving the column list.
 pub const TASK_COLUMNS: &str =
-    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at";
+    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at, location";
 
 pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -607,6 +650,8 @@ pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
         created_at: row.get(7)?,
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
+        location: row.get(10)?,
+        related: Vec::new(),
     })
 }
 
@@ -685,6 +730,7 @@ fn hydrate(conn: &Connection, mut t: Task) -> CliResult<Task> {
     t.tags = load_tags(conn, &t.uuid)?;
     t.depends_on = load_deps(conn, &t.uuid)?;
     t.blocked = is_blocked(conn, &t.uuid)?;
+    t.related = load_related(conn, &t.uuid)?;
     Ok(t)
 }
 
@@ -728,6 +774,43 @@ pub fn load_deps(conn: &Connection, task_uuid: &str) -> CliResult<Vec<i64>> {
 pub fn load_dep_uuids(conn: &Connection, task_uuid: &str) -> CliResult<Vec<String>> {
     let mut stmt = conn
         .prepare("SELECT depends_on_uuid FROM deps WHERE task_uuid = ?1 ORDER BY depends_on_uuid")
+        .map_err(|e| system(format!("prepare failed: {e}")))?;
+    let rows = stmt
+        .query_map(params![task_uuid], |r| r.get::<_, String>(0))
+        .map_err(|e| system(format!("query failed: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// Display ids of this task's mutually-linked "see also" tasks, for
+/// `Task.related` (text/JSON output). Joins through `uuid` so the id shown
+/// always reflects the current display id of the linked row.
+pub fn load_related(conn: &Connection, task_uuid: &str) -> CliResult<Vec<i64>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t2.id FROM related r
+             JOIN tasks t2 ON t2.uuid = r.related_uuid
+             WHERE r.task_uuid = ?1 ORDER BY t2.id",
+        )
+        .map_err(|e| system(format!("prepare failed: {e}")))?;
+    let rows = stmt
+        .query_map(params![task_uuid], |r| r.get::<_, i64>(0))
+        .map_err(|e| system(format!("query failed: {e}")))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| system(format!("row read failed: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// Uuid-space related-link targets — for the merge engine, which must join
+/// on true identity rather than the (now possibly duplicate) display id.
+pub fn load_related_uuids(conn: &Connection, task_uuid: &str) -> CliResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT related_uuid FROM related WHERE task_uuid = ?1 ORDER BY related_uuid")
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
         .query_map(params![task_uuid], |r| r.get::<_, String>(0))

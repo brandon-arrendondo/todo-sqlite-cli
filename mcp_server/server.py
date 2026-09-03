@@ -125,6 +125,8 @@ def add_task(
     priority: int = 3,
     depends_on: list[int] | None = None,
     start: bool = False,
+    location: str | None = None,
+    related: list[int] | None = None,
 ) -> str:
     """Add a new task. Returns the new task as JSON.
 
@@ -134,6 +136,9 @@ def add_task(
     priority: 1 (highest) to 5 (lowest), default 3
     depends_on: list of task IDs this task is blocked by
     start: immediately move to in-progress
+    location: where this work must be done (e.g. a specific node/site)
+    related: list of task IDs to link as related work (mutual — also shows
+        up on those tasks). Not blocking, unlike depends_on.
     """
     args = ["add", title, "--priority", str(priority)]
     if details:
@@ -144,6 +149,10 @@ def add_task(
         args += ["--depends-on", str(dep)]
     if start:
         args.append("--start")
+    if location:
+        args += ["--location", location]
+    for r in related or []:
+        args += ["--related", str(r)]
     new_id = int(_run(*args))
     return _run("show", str(new_id), "--format", "json")
 
@@ -202,6 +211,10 @@ def edit_task(
     rm_tags: list[str] | None = None,
     add_deps: list[int] | None = None,
     rm_deps: list[int] | None = None,
+    location: str | None = None,
+    clear_location: bool = False,
+    add_related: list[int] | None = None,
+    rm_related: list[int] | None = None,
 ) -> str:
     """Edit an existing task. Returns the updated task as JSON.
 
@@ -211,6 +224,11 @@ def edit_task(
     body with a newline separator, preserving prior context. Use details
     only when you actually want to REPLACE the entire body (it discards
     whatever was there before).
+
+    location/clear_location: where the work must be done, or unset it
+        (mutually exclusive).
+    add_related/rm_related: link/unlink related work by task ID. Mutual —
+        also updates the other task; rejects linking a task to itself.
     """
     args = ["edit", str(id)]
     if title:
@@ -231,6 +249,14 @@ def edit_task(
         args += ["--add-dep", str(dep)]
     for dep in rm_deps or []:
         args += ["--rm-dep", str(dep)]
+    if location:
+        args += ["--location", location]
+    if clear_location:
+        args.append("--clear-location")
+    for r in add_related or []:
+        args += ["--add-related", str(r)]
+    for r in rm_related or []:
+        args += ["--rm-related", str(r)]
     _run(*args)
     return _run("show", str(id), "--format", "json")
 

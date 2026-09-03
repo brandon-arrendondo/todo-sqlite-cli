@@ -207,6 +207,48 @@ fn new_tasks_on_both_sides_keep_their_own_duplicate_display_id() {
 }
 
 #[test]
+fn related_link_added_by_one_side_stays_mutual_after_merge() {
+    let fx = MergeFixture::new();
+    let base = fx.init("base.db");
+    let a = fx.add(&base, &["task a"]);
+    let b = fx.add(&base, &["task b"]);
+
+    let ours = fx.copy(&base, "ours.db");
+    let theirs = fx.copy(&base, "theirs.db");
+
+    fx.cmd(&ours)
+        .args(["edit", &a.to_string(), "--add-related", &b.to_string()])
+        .assert()
+        .success();
+
+    let merged = fx.path("merged.db");
+    let out = fx.run(&[
+        "--base",
+        base.to_str().unwrap(),
+        "--ours",
+        ours.to_str().unwrap(),
+        "--theirs",
+        theirs.to_str().unwrap(),
+        "--into",
+        merged.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "merge failed: {:?}", out);
+
+    let va = fx.show_json(&merged, a);
+    let vb = fx.show_json(&merged, b);
+    assert_eq!(
+        va["related"].as_array().unwrap(),
+        &[serde_json::json!(b)],
+        "a: {va:?}"
+    );
+    assert_eq!(
+        vb["related"].as_array().unwrap(),
+        &[serde_json::json!(a)],
+        "b: {vb:?}"
+    );
+}
+
+#[test]
 fn same_field_conflict_keeps_ours_and_tags() {
     let fx = MergeFixture::new();
     let base = fx.init("base.db");
