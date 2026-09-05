@@ -15,7 +15,7 @@ cargo install todo-sqlite-cli
 
 Single static binary, SQLite bundled. Pre-built `.deb`, `.rpm`, and AppImage
 artifacts are attached to each
-[release](https://github.com/brandonarrendondo/todo-sqlite-cli/releases).
+[release](https://github.com/brandon-arrendondo/todo-sqlite-cli/releases).
 
 ## Quickstart
 
