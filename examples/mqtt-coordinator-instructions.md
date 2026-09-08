@@ -61,12 +61,21 @@ thing blocking a worker's task list from moving forward.
   reconnects) later — it'll get it immediately without you resending
   anything; leave it `false` for a one-off that's only relevant right now.
 
+**Assigning work, separate from write requests:**
+
+- `assign_task(worker_id, body, task_id=None, file_path=None)` — "here is
+  what to work on next," distinct from `send_message`'s free-form notes.
+  Pass `task_id` when the assignment is about a specific task (informational
+  only — the worker reads full detail itself via `show_task`). The worker
+  polls for these with `check_assignments()`.
+
 **Knowing who's around:**
 
-- `list_workers()` — `{worker_id, status, ts}` for every worker seen so
-  far. A worker announces itself on connect and keeps refreshing that
-  automatically, so you don't need to ask it to check in; `ts` not
+- `list_workers()` — `{worker_id, status, work_state, ts}` for every worker
+  seen so far. A worker announces itself on connect and keeps refreshing
+  that automatically, so you don't need to ask it to check in; `ts` not
   advancing for a while (a few multiples of its heartbeat interval, default
   60s) means it's gone quiet, and an unclean disconnect flips it to
-  `"offline"` on its own. Check this before assuming a worker will act on
-  something you send it.
+  `"offline"` on its own. `work_state` is whatever the worker last reported
+  via `report_state()` (e.g. idle/busy/blocked) — null if it never has.
+  Check this before assuming a worker will act on something you send it.

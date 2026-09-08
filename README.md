@@ -252,10 +252,11 @@ by `.gitignore` already, along with the coordinator's pending-request queue
 `*.mqtt-messages.json`, `*.mqtt-broadcasts.json`), the `mqtt-files/`
 attachment directory, and any `*mqtt*.json` config.
 
-Five more MCP tools appear alongside the usual 12, active only in the
+Eight more MCP tools appear alongside the usual 12, active only in the
 matching mode (the others raise a clear error if called in the wrong mode):
-`list_pending_requests`, `approve_request`, `reject_request`, `list_workers`
-(coordinator); `check_request`, `sync_state` (worker); `send_message`,
+`list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
+`assign_task` (coordinator); `check_request`, `sync_state`,
+`check_assignments`, `report_state` (worker); `send_message`,
 `check_messages`, `broadcast`\*, `check_broadcasts`\* (\*coordinator-only
 `broadcast`/worker-only `check_broadcasts`; `send_message`/`check_messages`
 work in both modes). See
@@ -263,6 +264,35 @@ work in both modes). See
 and
 [examples/mqtt-worker-instructions.md](examples/mqtt-worker-instructions.md)
 for the agent-facing workflow on each side.
+
+**Topic layout, and why every worker-owned topic is per-worker:** every
+topic a worker publishes to, or reads for messages meant only for it, is
+scoped to that worker's own subtopic (`.../<its client_id>`) rather than one
+topic every worker shares — `requests/<id>`, `responses/<id>`,
+`assign/<id>`, `messages/to-coordinator/<id>`, `messages/to-worker/<id>`,
+`presence/<id>`. The coordinator subscribes to the wildcard form
+(`requests/+`, etc.); a worker subscribes only to its own leaf. This is
+what lets a broker ACL grant each worker write access to just its own
+subtopic instead of a topic every worker must be trusted with — the same
+isolation a fleet's own worker-uplink/coordinator-downlink topic split
+already relies on. `broadcast` gets the same treatment for a different
+reason: each broadcast is published under its own `broadcast/<message_id>`
+subtopic, so a retained one occupies a permanent slot of its own instead of
+silently overwriting whatever standing announcement was retained on a
+shared flat topic before it.
+
+**Assignment and work-state, separate from messaging:**
+
+- `assign_task(worker_id, body, task_id=None, file_path=None)`
+  (coordinator only) — "here is what to work on next," distinct from
+  `send_message`'s free-form notes. `task_id` is informational; the worker
+  still reads full detail via `show_task`. Workers poll with
+  `check_assignments()`.
+- `report_state(state)` (worker only) — a work-state string (e.g.
+  idle/busy/blocked, whatever convention the fleet agrees on), republished
+  immediately alongside online presence rather than waiting for the next
+  heartbeat. Visible to the coordinator as `list_workers()`'s `work_state`
+  field.
 
 **Messaging, files, presence, and reconnection:**
 
@@ -281,7 +311,9 @@ for the agent-facing workflow on each side.
   connects (or reconnects) later gets it immediately, no resend needed.
   Workers drain their broadcast queue with `check_broadcasts()`.
 - `list_workers()` (coordinator only) — presence for every worker seen so
-  far: `{worker_id, status, ts}`. Each worker announces `"online"`
+  far: `{worker_id, status, work_state, ts}` (`work_state` is whatever a
+  worker last passed to `report_state()`, null if it never has). Each
+  worker announces `"online"`
   immediately on connect and republishes it every `heartbeat_interval_s`
   (default 60s); an MQTT Last-Will-Testament makes the broker publish
   `"offline"` automatically if a worker's connection drops without a clean

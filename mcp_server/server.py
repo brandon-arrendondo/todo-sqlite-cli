@@ -395,6 +395,54 @@ def sync_state() -> str:
 
 
 @mcp.tool()
+def assign_task(
+    worker_id: str,
+    body: str,
+    task_id: int | None = None,
+    file_path: str | None = None,
+) -> str:
+    """Coordinator only. Publish a work assignment to one worker's own
+    assign topic — distinct from send_message: this is specifically "here
+    is what to work on next," polled by the worker via check_assignments().
+
+    task_id: optional task id this assignment refers to (informational —
+        the worker still reads full detail via show_task).
+    file_path: see send_message.
+
+    Returns {"message_id": ..., "status": "sent"}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("assign_task requires MQTT coordinator mode")
+    return _mqtt.assign(worker_id, body, task_id, file_path)
+
+
+@mcp.tool()
+def check_assignments() -> str:
+    """Worker only. Drain work assignments from the coordinator since the
+    last call, as {"assignments": [{message_id, from, task_id?, body,
+    file_path?, ts}, ...]}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "worker":
+        raise RuntimeError("check_assignments requires MQTT worker mode")
+    return _mqtt.check_assignments()
+
+
+@mcp.tool()
+def report_state(state: str) -> str:
+    """Worker only. Report a work-state string (e.g. idle/busy/blocked —
+    whatever convention the fleet agrees on) alongside your online
+    presence, refreshed immediately rather than waiting for the next
+    heartbeat. Visible to the coordinator via list_workers()'s
+    "work_state" field.
+
+    Returns {"worker_id": ..., "work_state": ...}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "worker":
+        raise RuntimeError("report_state requires MQTT worker mode")
+    return json.dumps(_mqtt.report_state(state))
+
+
+@mcp.tool()
 def send_message(
     body: str,
     worker_id: str | None = None,
@@ -477,7 +525,9 @@ def list_workers() -> str:
     here — judge a worker gone if its ts hasn't advanced in a few multiples
     of its heartbeat interval.
 
-    Returns {"workers": [{worker_id, status, ts}, ...]}.
+    Returns {"workers": [{worker_id, status, work_state, ts}, ...]}.
+    work_state is whatever a worker last passed to report_state() (null if
+    it never has).
     """
     if _mqtt is None or _mqtt_config.mode != "coordinator":
         raise RuntimeError("list_workers requires MQTT coordinator mode")

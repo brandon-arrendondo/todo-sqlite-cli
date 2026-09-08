@@ -7,12 +7,39 @@ every mutation becomes a pending request the coordinator's agent explicitly
 approves or rejects, and the worker's local database is a disposable read
 replica kept current by full-db-file snapshots the coordinator publishes
 after every applied change. Alongside that, both sides can exchange direct
-messages (optionally with a small file attached), the coordinator can
-broadcast to every worker, and workers announce presence so the coordinator
-knows who's currently around.
+messages (optionally with a small file attached) and assignments, the
+coordinator can broadcast to every worker, and workers announce presence
+(including an optional work-state) so the coordinator knows who's currently
+around and what they're doing.
 
 Only imported when TODO_SQLITE_CLI_MQTT_CONFIG is set, so a standalone
 deployment never needs the `paho-mqtt` optional dependency installed.
+
+Topic layout, all namespaced under `topic_prefix`:
+
+  requests/<worker_id>              worker -> coordinator (write requests)
+  responses/<worker_id>              coordinator -> worker (request outcome)
+  assign/<worker_id>                 coordinator -> worker (work assignment)
+  messages/to-coordinator/<worker_id> worker -> coordinator (direct message)
+  messages/to-worker/<worker_id>      coordinator -> worker (direct message)
+  presence/<worker_id>                worker -> coordinator (online/state)
+  broadcast/<message_id>              coordinator -> all workers
+  state                               coordinator -> all workers (db snapshot)
+
+Every topic a worker publishes to, or subscribes to for messages meant only
+for it, is scoped to that worker's own subtopic (keyed by its `client_id`)
+rather than one topic shared by every worker. That's deliberate: a broker
+ACL can then grant each worker write access to only its own subtopic (the
+same isolation principle as the coordinator-owned `fleet/tasks/<node>` /
+worker-owned `fleet/workers/<node>` split this sync sits alongside),
+instead of requiring a shared write topic every worker must be trusted
+with. The coordinator subscribes to the wildcard form of each worker-owned
+topic (`.../+`); a worker subscribes only to its own leaf.
+
+`broadcast` similarly gets its own subtopic per message
+(`broadcast/<message_id>`) rather than one flat topic, so a retained
+publish occupies its own permanent slot instead of silently overwriting
+whatever standing announcement was retained there before.
 """
 
 import base64
@@ -58,29 +85,31 @@ class Config:
     def password(self) -> str | None:
         return os.environ.get(self.password_env) if self.password_env else None
 
-    @property
-    def requests_topic(self) -> str:
-        return f"{self.topic_prefix}/requests"
+    # Per-worker topics: pass a worker_id to get that worker's own subtopic
+    # (what it publishes to, or subscribes to for itself); pass none (or
+    # omit it) to get the coordinator's subscribe-side wildcard.
 
-    @property
-    def responses_topic(self) -> str:
-        return f"{self.topic_prefix}/responses"
+    def requests_topic(self, worker_id: str | None = None) -> str:
+        return f"{self.topic_prefix}/requests/{worker_id or '+'}"
+
+    def responses_topic(self, worker_id: str) -> str:
+        return f"{self.topic_prefix}/responses/{worker_id}"
+
+    def assign_topic(self, worker_id: str | None = None) -> str:
+        return f"{self.topic_prefix}/assign/{worker_id or '+'}"
+
+    def messages_to_coordinator_topic(self, worker_id: str | None = None) -> str:
+        return f"{self.topic_prefix}/messages/to-coordinator/{worker_id or '+'}"
+
+    def messages_to_worker_topic(self, worker_id: str) -> str:
+        return f"{self.topic_prefix}/messages/to-worker/{worker_id}"
+
+    def broadcast_topic(self, message_id: str | None = None) -> str:
+        return f"{self.topic_prefix}/broadcast/{message_id or '#'}"
 
     @property
     def state_topic(self) -> str:
         return f"{self.topic_prefix}/state"
-
-    @property
-    def messages_to_coordinator_topic(self) -> str:
-        return f"{self.topic_prefix}/messages/to-coordinator"
-
-    @property
-    def messages_to_worker_topic(self) -> str:
-        return f"{self.topic_prefix}/messages/to-worker"
-
-    @property
-    def broadcast_topic(self) -> str:
-        return f"{self.topic_prefix}/broadcast"
 
     @property
     def presence_prefix(self) -> str:
@@ -239,7 +268,8 @@ class Mailbox:
 class CoordinatorService:
     """Owns the master db. Holds a pending-request queue fed by workers;
     nothing is applied until the coordinator's agent calls approve/reject.
-    Also fields direct messages/broadcasts and tracks worker presence.
+    Also fields direct messages/broadcasts/assignments and tracks worker
+    presence (including each worker's self-reported work-state).
     """
 
     def __init__(self, config: Config, run):
@@ -256,8 +286,8 @@ class CoordinatorService:
         self._client.on_message = self._on_message
 
     def _on_connect(self, client, _userdata, _connect_flags, _reason_code, _properties):
-        client.subscribe(self.config.requests_topic, qos=1)
-        client.subscribe(self.config.messages_to_coordinator_topic, qos=1)
+        client.subscribe(self.config.requests_topic(), qos=1)
+        client.subscribe(self.config.messages_to_coordinator_topic(), qos=1)
         client.subscribe(self.config.presence_wildcard, qos=1)
 
     def _load_pending(self) -> dict:
@@ -269,12 +299,13 @@ class CoordinatorService:
         self._pending_path.write_text(json.dumps(self._pending))
 
     def _on_message(self, _client, _userdata, msg):
-        if msg.topic == self.config.requests_topic:
+        prefix = self.config.topic_prefix
+        if msg.topic.startswith(f"{prefix}/requests/"):
             request = json.loads(msg.payload.decode())
             with self._lock:
                 self._pending[request["request_id"]] = request
                 self._save_pending()
-        elif msg.topic == self.config.messages_to_coordinator_topic:
+        elif msg.topic.startswith(f"{prefix}/messages/to-coordinator/"):
             self._inbox.add(self._land_file(json.loads(msg.payload.decode())))
         elif msg.topic.startswith(self.config.presence_prefix):
             payload = json.loads(msg.payload.decode())
@@ -286,6 +317,7 @@ class CoordinatorService:
                 # "offline" notice as having happened back at connect time.
                 self._presence[payload["worker_id"]] = {
                     "status": payload["status"],
+                    "work_state": payload.get("work_state"),
                     "ts": time.time(),
                 }
 
@@ -357,7 +389,9 @@ class CoordinatorService:
             payload["task"] = task
         if error is not None:
             payload["error"] = error
-        self._client.publish(self.config.responses_topic, json.dumps(payload), qos=1)
+        self._client.publish(
+            self.config.responses_topic(request["worker_id"]), json.dumps(payload), qos=1
+        )
 
     def publish_snapshot(self) -> None:
         data = _checkpoint_and_read(self.config.db_path)
@@ -378,11 +412,37 @@ class CoordinatorService:
         }
         if file_path:
             payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
-        self._client.publish(self.config.messages_to_worker_topic, json.dumps(payload), qos=1)
+        self._client.publish(self.config.messages_to_worker_topic(worker_id), json.dumps(payload), qos=1)
         return json.dumps({"message_id": message_id, "status": "sent"})
 
     def check_messages(self) -> str:
         return json.dumps({"messages": self._inbox.drain()})
+
+    def assign(
+        self,
+        worker_id: str,
+        body: str,
+        task_id: int | None = None,
+        file_path: str | None = None,
+    ) -> str:
+        """Publish a work assignment to one worker's own assign topic.
+        Not retained — a worker still gets it on reconnect within
+        session_expiry_s via its persistent MQTT session, same as any
+        other QoS-1 message; retaining would mean a worker that reconnects
+        long after finishing the assignment sees it again as if new."""
+        _check_message_length(body, self.config.message_max_chars)
+        message_id = str(uuid.uuid4())
+        payload = {
+            "message_id": message_id,
+            "from": self.config.client_id,
+            "task_id": task_id,
+            "body": body,
+            "ts": time.time(),
+        }
+        if file_path:
+            payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
+        self._client.publish(self.config.assign_topic(worker_id), json.dumps(payload), qos=1)
+        return json.dumps({"message_id": message_id, "status": "sent"})
 
     def broadcast(self, body: str, retain: bool = False, file_path: str | None = None) -> str:
         _check_message_length(body, self.config.message_max_chars)
@@ -397,7 +457,7 @@ class CoordinatorService:
         if file_path:
             payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
         self._client.publish(
-            self.config.broadcast_topic, json.dumps(payload), qos=1, retain=retain
+            self.config.broadcast_topic(message_id), json.dumps(payload), qos=1, retain=retain
         )
         return json.dumps({"message_id": message_id, "status": "sent", "retained": retain})
 
@@ -411,10 +471,10 @@ class WorkerService:
     """Never writes its own database directly. Every mutation becomes a
     request published to the coordinator; the local db is a disposable
     replica kept current by subscribing to the coordinator's snapshots.
-    Also sends/receives direct messages and broadcasts, and announces
-    presence (an immediate "online" plus a periodic heartbeat, backed by
-    an MQTT Last-Will-Testament that fires "offline" on an unclean
-    disconnect).
+    Also sends/receives direct messages, broadcasts, and assignments, and
+    announces presence (an immediate "online" plus a periodic heartbeat and
+    any self-reported work-state, backed by an MQTT Last-Will-Testament
+    that fires "offline" on an unclean disconnect).
     """
 
     def __init__(self, config: Config):
@@ -424,11 +484,13 @@ class WorkerService:
         self._lock = threading.Lock()
         self._local: dict[str, dict] = {}
         self._last_synced: float | None = None
+        self._work_state: str | None = None
         self._messages = Mailbox(Path(config.worker_db_path).with_suffix(".mqtt-messages.json"))
         self._broadcasts = Mailbox(Path(config.worker_db_path).with_suffix(".mqtt-broadcasts.json"))
+        self._assignments = Mailbox(Path(config.worker_db_path).with_suffix(".mqtt-assignments.json"))
         self._ensure_replica_initialized()
         will_payload = json.dumps(
-            {"worker_id": config.client_id, "status": "offline", "ts": time.time()}
+            {"worker_id": config.client_id, "status": "offline", "work_state": None, "ts": time.time()}
         )
         self._client = _make_client(
             config,
@@ -442,15 +504,21 @@ class WorkerService:
         self._heartbeat_thread.start()
 
     def _on_connect(self, client, _userdata, _connect_flags, _reason_code, _properties):
-        client.subscribe(self.config.responses_topic, qos=1)
+        client.subscribe(self.config.responses_topic(self.config.client_id), qos=1)
         client.subscribe(self.config.state_topic, qos=1)
-        client.subscribe(self.config.messages_to_worker_topic, qos=1)
-        client.subscribe(self.config.broadcast_topic, qos=1)
+        client.subscribe(self.config.messages_to_worker_topic(self.config.client_id), qos=1)
+        client.subscribe(self.config.assign_topic(self.config.client_id), qos=1)
+        client.subscribe(self.config.broadcast_topic(), qos=1)
         self._publish_presence(client, "online")
 
     def _publish_presence(self, client, status: str) -> None:
         payload = json.dumps(
-            {"worker_id": self.config.client_id, "status": status, "ts": time.time()}
+            {
+                "worker_id": self.config.client_id,
+                "status": status,
+                "work_state": self._work_state,
+                "ts": time.time(),
+            }
         )
         client.publish(
             self.config.presence_topic(self.config.client_id), payload, qos=1, retain=True
@@ -475,10 +543,9 @@ class WorkerService:
             )
 
     def _on_message(self, _client, _userdata, msg):
-        if msg.topic == self.config.responses_topic:
+        cid = self.config.client_id
+        if msg.topic == self.config.responses_topic(cid):
             response = json.loads(msg.payload.decode())
-            if response.get("worker_id") != self.config.client_id:
-                return
             with self._lock:
                 self._local[response["request_id"]] = response
         elif msg.topic == self.config.state_topic:
@@ -487,12 +554,11 @@ class WorkerService:
             _atomic_replace(self.config.worker_db_path, data)
             with self._lock:
                 self._last_synced = payload["ts"]
-        elif msg.topic == self.config.messages_to_worker_topic:
-            message = json.loads(msg.payload.decode())
-            if message.get("to") != self.config.client_id:
-                return
-            self._messages.add(self._land_file(message))
-        elif msg.topic == self.config.broadcast_topic:
+        elif msg.topic == self.config.messages_to_worker_topic(cid):
+            self._messages.add(self._land_file(json.loads(msg.payload.decode())))
+        elif msg.topic == self.config.assign_topic(cid):
+            self._assignments.add(self._land_file(json.loads(msg.payload.decode())))
+        elif msg.topic.startswith(f"{self.config.topic_prefix}/broadcast/"):
             self._broadcasts.add(self._land_file(json.loads(msg.payload.decode())))
 
     def _land_file(self, message: dict) -> dict:
@@ -514,7 +580,7 @@ class WorkerService:
         }
         with self._lock:
             self._local[request_id] = {"status": "pending"}
-        self._client.publish(self.config.requests_topic, json.dumps(request), qos=1)
+        self._client.publish(self.config.requests_topic(self.config.client_id), json.dumps(request), qos=1)
         return {"request_id": request_id, "status": "pending"}
 
     def check(self, request_id: str) -> dict:
@@ -526,6 +592,16 @@ class WorkerService:
             if self._last_synced is None:
                 return {"synced": False, "last_synced": None}
             return {"synced": True, "last_synced": self._last_synced}
+
+    def report_state(self, state: str) -> dict:
+        """Update this worker's self-reported work-state (whatever
+        convention the fleet agrees on, e.g. idle/busy/blocked) and
+        republish presence immediately rather than waiting for the next
+        heartbeat tick. Rides the same presence payload as connection
+        status, so there's no separate retained "status" topic to manage."""
+        self._work_state = state
+        self._publish_presence(self._client, "online")
+        return {"worker_id": self.config.client_id, "work_state": state}
 
     def send_message(self, body: str, file_path: str | None = None) -> str:
         _check_message_length(body, self.config.message_max_chars)
@@ -539,7 +615,11 @@ class WorkerService:
         }
         if file_path:
             payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
-        self._client.publish(self.config.messages_to_coordinator_topic, json.dumps(payload), qos=1)
+        self._client.publish(
+            self.config.messages_to_coordinator_topic(self.config.client_id),
+            json.dumps(payload),
+            qos=1,
+        )
         return json.dumps({"message_id": message_id, "status": "sent"})
 
     def check_messages(self) -> str:
@@ -547,3 +627,6 @@ class WorkerService:
 
     def check_broadcasts(self) -> str:
         return json.dumps({"broadcasts": self._broadcasts.drain()})
+
+    def check_assignments(self) -> str:
+        return json.dumps({"assignments": self._assignments.drain()})

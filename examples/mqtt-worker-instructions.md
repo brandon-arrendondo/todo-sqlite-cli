@@ -60,7 +60,20 @@ coordinator auto-stamps it with this node's client id when it approves a
   if it was published before this session started, so don't assume you've
   seen everything just because your session is new.
 
-**You don't need to do anything for presence** — this node announces
-"online" automatically on connect and keeps refreshing it; the broker
-announces "offline" on your behalf if this node's connection drops
+**Getting your next assignment, separate from write requests:**
+
+- `check_assignments()` drains "here's what to work on next" messages from
+  the coordinator, as `{"assignments": [{message_id, from, task_id?, body,
+  file_path?, ts}, ...]}`. `task_id`, if present, is informational — read
+  full detail with `show_task`.
+
+**You don't need to do anything for connection presence** — this node
+announces "online" automatically on connect and keeps refreshing it; the
+broker announces "offline" on your behalf if this node's connection drops
 uncleanly. No tool call needed on your end for either.
+
+**Work-state is separate from connection presence** — call
+`report_state(state)` (e.g. `"idle"`, `"busy"`, `"blocked"`, whatever
+convention the fleet agrees on) whenever it changes; it republishes
+immediately rather than waiting for the next heartbeat, so the coordinator
+sees it right away via `list_workers()`.
