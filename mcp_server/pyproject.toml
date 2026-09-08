@@ -7,5 +7,8 @@ dependencies = [
     "mcp>=1.0.0",
 ]
 
+[project.optional-dependencies]
+mqtt = ["paho-mqtt>=2.0"]
+
 [project.scripts]
 todo-mcp-server = "server:main"

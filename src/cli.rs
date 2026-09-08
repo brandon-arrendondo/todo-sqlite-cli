@@ -98,6 +98,9 @@ pub enum Command {
         /// Link this task to another (ID or full UUID) as related work. Mutual — shows up on both tasks' `show` output. Repeatable.
         #[arg(long = "related", value_name = "ID")]
         related: Vec<String>,
+        /// MQTT client id that claimed this task (optional coordinator/worker sync feature). Usually left unset and auto-stamped later; see `edit --implementation-client`.
+        #[arg(long = "implementation-client", value_name = "CLIENT_ID")]
+        implementation_client: Option<String>,
     },
 
     /// List tasks. Default shows active work (in-progress + partial + pending), in-progress first then partial then pending; within each, by priority.
@@ -228,6 +231,12 @@ pub enum Command {
         /// Remove a related-work link (ID or full UUID). Repeatable. Removes both directions.
         #[arg(long = "rm-related", value_name = "ID")]
         rm_related: Vec<String>,
+        /// Set the MQTT client id that claimed this task (optional coordinator/worker sync feature). Mutually exclusive with `--clear-implementation-client`.
+        #[arg(long = "implementation-client", value_name = "CLIENT_ID")]
+        implementation_client: Option<String>,
+        /// Clear the implementation_client field.
+        #[arg(long)]
+        clear_implementation_client: bool,
     },
 
     /// Reassign a task's display id — for resolving a duplicate id left by a

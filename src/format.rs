@@ -124,6 +124,9 @@ pub fn print_task_text(task: &Task, verbose: bool) {
     if let Some(l) = &task.location {
         println!("Location: {l}");
     }
+    if let Some(c) = &task.implementation_client {
+        println!("Client: {c}");
+    }
     if !task.tags.is_empty() {
         println!("Tags: {}", task.tags.join(", "));
     }
@@ -190,6 +193,9 @@ pub fn markdown_task(task: &Task) -> String {
     }
     if let Some(l) = &task.location {
         buf.push_str(&format!("- **Location:** {l}\n"));
+    }
+    if let Some(c) = &task.implementation_client {
+        buf.push_str(&format!("- **Client:** {c}\n"));
     }
     buf.push_str(&format!("- **Created:** {}\n", task.created_at));
     if let Some(s) = &task.started_at {

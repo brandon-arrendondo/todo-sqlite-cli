@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{system, user, CliResult};
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE tasks (
@@ -20,7 +20,8 @@ CREATE TABLE tasks (
     created_at   TEXT NOT NULL,
     started_at   TEXT,
     completed_at TEXT,
-    location     TEXT
+    location     TEXT,
+    implementation_client TEXT
 );
 
 CREATE TABLE tags (
@@ -96,6 +97,10 @@ pub struct Task {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub location: Option<String>,
+    /// MQTT client id of whoever last claimed this task (auto-stamped by a
+    /// coordinator approving a `start`; sticky — never auto-cleared). Unset
+    /// outside the optional MQTT coordinator/worker sync feature.
+    pub implementation_client: Option<String>,
     /// Display ids of mutually-linked "see also" tasks. Only populated by
     /// `hydrate` (i.e. single-task commands like `show`/`add`/`edit`) —
     /// list-style commands leave this empty on purpose, and it's hidden
@@ -180,6 +185,9 @@ fn migrate(conn: &Connection) -> CliResult<()> {
     }
     if current <= 5 {
         migrate_v5_to_v6(conn)?;
+    }
+    if current <= 6 {
+        migrate_v6_to_v7(conn)?;
     }
     Ok(())
 }
@@ -566,6 +574,20 @@ fn migrate_v5_to_v6(conn: &Connection) -> CliResult<()> {
     Ok(())
 }
 
+/// Adds `tasks.implementation_client`, for the optional MQTT coordinator/
+/// worker sync feature to record which client last claimed a task. Like
+/// v5->v6, a plain nullable column add, no Rust-generated values needed.
+fn migrate_v6_to_v7(conn: &Connection) -> CliResult<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tasks ADD COLUMN implementation_client TEXT;
+        UPDATE meta SET value = '7' WHERE key = 'schema_version';
+        "#,
+    )
+    .map_err(|e| system(format!("v6->v7 migration failed: {e}")))?;
+    Ok(())
+}
+
 pub fn create_schema(conn: &Connection) -> CliResult<()> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| system(format!("schema create failed: {e}")))?;
@@ -633,7 +655,7 @@ pub fn is_initialized(conn: &Connection) -> bool {
 /// this codebase uses. Shared so a query built anywhere can hand its rows
 /// straight to `row_to_task_base` instead of re-deriving the column list.
 pub const TASK_COLUMNS: &str =
-    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at, location";
+    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at, location, implementation_client";
 
 pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -651,6 +673,7 @@ pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
         started_at: row.get(8)?,
         completed_at: row.get(9)?,
         location: row.get(10)?,
+        implementation_client: row.get(11)?,
         related: Vec::new(),
     })
 }

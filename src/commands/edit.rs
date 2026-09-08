@@ -26,6 +26,8 @@ pub fn run(
     clear_location: bool,
     add_related: &[String],
     rm_related: &[String],
+    implementation_client: Option<&str>,
+    clear_implementation_client: bool,
 ) -> CliResult<()> {
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -56,6 +58,12 @@ pub fn run(
     apply_tags(&tx, &uuid, add_tag, rm_tag)?;
     apply_deps(&tx, &uuid, &add_dep_uuids, &rm_dep_uuids)?;
     apply_location(&tx, &uuid, location, clear_location)?;
+    apply_implementation_client(
+        &tx,
+        &uuid,
+        implementation_client,
+        clear_implementation_client,
+    )?;
     apply_related(&tx, &uuid, &add_related_uuids, &rm_related_uuids)?;
 
     tx.commit()
@@ -277,6 +285,36 @@ fn apply_location(
     if clear_location {
         tx.execute(
             "UPDATE tasks SET location = NULL WHERE uuid = ?1",
+            params![uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Apply the mutually-exclusive implementation_client edits, same mutex
+/// pattern as `apply_location`'s `--location`/`--clear-location`.
+fn apply_implementation_client(
+    tx: &rusqlite::Transaction,
+    uuid: &str,
+    implementation_client: Option<&str>,
+    clear_implementation_client: bool,
+) -> CliResult<()> {
+    if implementation_client.is_some() && clear_implementation_client {
+        return Err(user(
+            "--implementation-client and --clear-implementation-client are mutually exclusive",
+        ));
+    }
+    if let Some(c) = implementation_client {
+        tx.execute(
+            "UPDATE tasks SET implementation_client = ?1 WHERE uuid = ?2",
+            params![c, uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    if clear_implementation_client {
+        tx.execute(
+            "UPDATE tasks SET implementation_client = NULL WHERE uuid = ?1",
             params![uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;

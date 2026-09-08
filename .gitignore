@@ -8,3 +8,10 @@ THIRD_PARTY_LICENSES.txt
 *.cdx.json
 __pycache__/
 *.pyc
+
+# MQTT coordinator/worker sync (mcp_server/): connection config (host/port/
+# client-id/etc — the password itself is never stored here, only an env var
+# name, but the file is still node-local config, not something to share via
+# git) and the coordinator's on-disk pending-request queue.
+*mqtt*.json
+*.mqtt-pending.json
