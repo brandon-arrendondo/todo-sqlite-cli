@@ -8,6 +8,7 @@ THIRD_PARTY_LICENSES.txt
 *.cdx.json
 __pycache__/
 *.pyc
+.venv/
 
 # MQTT coordinator/worker sync (mcp_server/): connection config (host/port/
 # client-id/etc — the password itself is never stored here, only an env var
