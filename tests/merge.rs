@@ -571,7 +571,7 @@ fn missing_ours_file_is_a_user_error() {
     assert!(predicate::str::contains("not found").eval(&String::from_utf8_lossy(&out.stderr)));
 }
 
-/// Reproduces the CORRUPTION_LOG.md incident: `ours` is still on an old
+/// Reproduces the incident recorded in docs/incidents.rst: `ours` is still on an old
 /// schema (no uuid column) while `theirs` has already been migrated to the
 /// current one. Merging must refuse outright rather than silently
 /// migrating `ours` mid-merge — that migration mints fresh, uncorrelated

@@ -212,7 +212,7 @@ logic to the Rust binary — no second database, no duplicate code.
 
 With several agent nodes sharing one database, [git-based merging](#merging)
 means very frequent merges, and merging has already caused a real corruption
-incident ([`CORRUPTION_LOG.md`](CORRUPTION_LOG.md): a stale-schema node's
+incident ([`docs/incidents.rst`](docs/incidents.rst): a stale-schema node's
 merge duplicated 618 of 620 tasks). As an alternative for that situation, the
 MCP server can optionally run an MQTT sync layer with a single owner of the
 truth instead of eventually-consistent merging:

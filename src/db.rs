@@ -642,7 +642,7 @@ pub fn peek_schema_version(path: &Path) -> CliResult<Option<i64>> {
 /// `open`-ing any of them for real: `open` auto-migrates unconditionally,
 /// and migrating a behind side mid-merge mints fresh, uncorrelated uuids
 /// for its pre-existing rows — a merge that then unions by uuid duplicates
-/// every one of them instead of reconciling. See CORRUPTION_LOG.md for a
+/// every one of them instead of reconciling. See docs/incidents.rst for a
 /// real incident this caused.
 pub fn require_matching_schema_versions(labeled: &[(&str, Option<i64>)]) -> CliResult<()> {
     let versions: std::collections::HashSet<i64> = labeled.iter().filter_map(|(_, v)| *v).collect();
@@ -655,7 +655,7 @@ pub fn require_matching_schema_versions(labeled: &[(&str, Option<i64>)]) -> CliR
         return Err(user(format!(
             "refusing to merge: schema versions differ ({detail}) — migrating mid-merge would mint fresh, \
              uncorrelated uuids for whichever side is behind and duplicate every pre-existing task (see \
-             CORRUPTION_LOG.md). Run any todo-sqlite-cli command (e.g. `todo-sqlite-cli doctor`) against the \
+             docs/incidents.rst). Run any todo-sqlite-cli command (e.g. `todo-sqlite-cli doctor`) against the \
              database that's behind to migrate it to schema v{SCHEMA_VERSION} first, then retry."
         )));
     }
