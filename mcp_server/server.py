@@ -563,5 +563,9 @@ def list_workers() -> str:
     return _mqtt.list_workers()
 
 
-if __name__ == "__main__":
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

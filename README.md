@@ -5,7 +5,10 @@ agents (Claude Code and friends). CLI-first — no daemon, no TTY required.
 An optional Python MCP server wraps the binary for agents that prefer tool
 calls over shell commands.
 
-`man todo-sqlite-cli` is the full reference; `--help` works on every command.
+`--help` works on every command and is the reference for a plain
+`cargo install`. A full man page also exists (`man/todo-sqlite-cli.1` in
+this repo) but isn't part of the crates.io package — see Install below for
+how to get it.
 
 ## Install
 
@@ -13,9 +16,14 @@ calls over shell commands.
 cargo install todo-sqlite-cli
 ```
 
-Single static binary, SQLite bundled. Pre-built `.deb`, `.rpm`, and AppImage
-artifacts are attached to each
-[release](https://github.com/brandon-arrendondo/todo-sqlite-cli/releases).
+Single static binary, SQLite bundled — but `cargo install` only builds the
+binary itself, nothing else in this repo. For the man page or the optional
+MCP server (see below), download the
+`todo-sqlite-cli-<os>-x64-<version>.tar.gz`/`.zip` archive from a
+[release](https://github.com/brandon-arrendondo/todo-sqlite-cli/releases)
+instead — it bundles the binary alongside `man/`, `mcp_server/`, and
+licensing info. Pre-built `.deb`/`.rpm`/AppImage packages (which install
+the man page into the system man path directly) are attached there too.
 
 ## Quickstart
 
@@ -185,7 +193,24 @@ binary as 12 tool calls (`list_tasks`, `add_task`, `start_task`, etc.) for
 agents that use MCP rather than shell commands. It delegates all storage and
 logic to the Rust binary — no second database, no duplicate code.
 
-**Requirements:** Python ≥ 3.11, `mcp >= 1.0.0` (`pip install mcp`).
+Not published to PyPI — a plain `cargo install` doesn't include it, so get
+`mcp_server/` either by cloning this repo or downloading a release archive
+(see Install above).
+
+**Requirements:** Python ≥ 3.11. Either install the loose dependency and
+run the script in place —
+
+```
+pip install mcp
+python3 /path/to/mcp_server/server.py
+```
+
+— or install `mcp_server/` itself as a local package, which also registers
+a `todo-mcp-server` command on `PATH`:
+
+```
+pip install /path/to/mcp_server
+```
 
 **Wire it into Claude Code** (`.claude/settings.json`):
 
@@ -232,8 +257,9 @@ truth instead of eventually-consistent merging:
   coordinator publishes after every applied change. There's no git merge
   step on the worker side at all.
 
-Requires the `mqtt` extra (`pip install todo-sqlite-cli-mcp[mqtt]`, or
-`pip install paho-mqtt>=2.0`). Enable it by pointing
+Requires `paho-mqtt>=2.0` — `pip install paho-mqtt`, or, if you installed
+`mcp_server/` as a package per above, `pip install /path/to/mcp_server[mqtt]`
+to pull in both dependencies at once. Enable it by pointing
 `TODO_SQLITE_CLI_MQTT_CONFIG` at a JSON config file:
 
 ```json

@@ -9,6 +9,8 @@ THIRD_PARTY_LICENSES.txt
 __pycache__/
 *.pyc
 .venv/
+mcp_server/build/
+mcp_server/*.egg-info/
 
 # MQTT coordinator/worker sync (mcp_server/): connection config (host/port/
 # client-id/etc — the password itself is never stored here, only an env var

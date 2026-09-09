@@ -15,3 +15,6 @@ mqtt = ["paho-mqtt>=2.0"]
 
 [project.scripts]
 todo-mcp-server = "server:main"
+
+[tool.setuptools]
+py-modules = ["server", "cli_ops", "mqtt_service"]
