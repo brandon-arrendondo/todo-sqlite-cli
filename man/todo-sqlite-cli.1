@@ -47,6 +47,13 @@ Initialize a new database. Writes a
 marker file in the current directory unless
 .B \-\-db
 is given.
+Pass
+.B \-\-marker-dir \fIPATH\fR
+to write the marker in
+.I PATH
+instead of the current directory; ignored when
+.B \-\-db
+is passed.
 .TP
 .B add \fITITLE\fR
 Add a new task. Prints the new ID. Flags:
@@ -138,6 +145,13 @@ never "the task to work on next". If every remaining unblocked task is a
 gate, prints nothing actionable (a stderr hint points at
 .BR "list \-\-kind gate" )
 rather than surfacing one.
+Pass
+.B \-\-project-name \fITEXT\fR
+to scope to just this project (exact match, same semantics as
+.BR list );
+useful on a coordinator db spanning several projects, since otherwise
+.B next
+may hand back another project's task if it outranks everything in your own.
 .TP
 .B start \fIID\fR
 Move a task to in-progress. If another task is already in-progress, it is
