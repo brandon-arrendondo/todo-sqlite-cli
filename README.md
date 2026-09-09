@@ -264,8 +264,11 @@ by `.gitignore` already, along with the coordinator's pending-request queue
 `*.mqtt-messages.json`, `*.mqtt-broadcasts.json`), the `mqtt-files/`
 attachment directory, and any `*mqtt*.json` config.
 
-Eight more MCP tools appear alongside the usual 12, active only in the
-matching mode (the others raise a clear error if called in the wrong mode):
+Thirteen more MCP tools exist for MQTT sync, but each is only registered on
+a node whose configured mode it's valid for — a standalone deployment (no
+MQTT config) sees none of them, a coordinator sees only the coordinator (and
+shared) ones, a worker only the worker (and shared) ones. This keeps a
+node's tool list free of entries that would just error if called:
 `list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
 `assign_task` (coordinator); `check_request`, `sync_state`,
 `check_assignments`, `report_state` (worker); `send_message`,

@@ -41,6 +41,21 @@ if os.environ.get("TODO_SQLITE_CLI_MQTT_CONFIG"):
         )
 
 
+def _mqtt_tool(*modes: str):
+    """Like @mcp.tool(), but only actually registers the tool when MQTT sync
+    is configured for one of `modes` — an unregistered tool costs the agent
+    nothing, whereas a registered-but-unusable one burns schema tokens on
+    every request in every deployment that never uses MQTT sync at all.
+    """
+
+    def decorator(func):
+        if _mqtt is not None and _mqtt_config.mode in modes:
+            return mcp.tool()(func)
+        return func
+
+    return decorator
+
+
 def _run(*args: str) -> str:
     """Run the CLI, raise RuntimeError on non-zero exit, return stdout.
 
@@ -202,9 +217,8 @@ def add_task(
     project_name: which project this task belongs to, for a coordinator db
         spanning several projects.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write(
         "add",
@@ -230,9 +244,8 @@ def start_task(id: int, force: bool = False) -> str:
     Automatically pauses any current in-progress task to 'partial'.
     force: allow multiple in-progress tasks and skip dependency check.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("start", dict(id=id, force=force))
 
@@ -241,9 +254,8 @@ def start_task(id: int, force: bool = False) -> str:
 def stop_task(id: int) -> str:
     """Pause an in-progress task (moves to 'partial'). Returns updated task as JSON.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("stop", dict(id=id))
 
@@ -252,9 +264,8 @@ def stop_task(id: int) -> str:
 def revert_task(id: int) -> str:
     """Move a task back to pending, clearing started_at. Returns updated task as JSON.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("revert", dict(id=id))
 
@@ -266,9 +277,8 @@ def done_task(id: int, rejected: bool = False) -> str:
     rejected: close the task as 'rejected' (declined / won't-do) instead of
         'done'. Records completed_at but does NOT unblock dependents.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("done", dict(id=id, rejected=rejected))
 
@@ -313,9 +323,8 @@ def edit_task(
     project_name/clear_project_name: which project this task belongs to,
         or unset it (mutually exclusive).
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of writing locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write(
         "edit",
@@ -348,9 +357,8 @@ def rm_task(id: int) -> str:
 
     Returns a confirmation message with the deleted task ID.
 
-    In worker mode (optional MQTT sync), this submits a request to the
-    coordinator instead of deleting locally, and returns
-    {"request_id": ..., "status": "pending"} — poll check_request(id).
+    In worker mode, submits to the coordinator instead of deleting locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("rm", dict(id=id))
 
@@ -360,7 +368,7 @@ def rm_task(id: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def list_pending_requests() -> str:
     """Coordinator only. List worker requests awaiting approve_request/
     reject_request, as {"pending": [{request_id, op, args, worker_id, ts}, ...]}.
@@ -370,7 +378,7 @@ def list_pending_requests() -> str:
     return _mqtt.list_pending()
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def approve_request(request_id: str) -> str:
     """Coordinator only. Apply a pending worker request to the master db,
     publish the result and a fresh state snapshot, and return the updated
@@ -381,7 +389,7 @@ def approve_request(request_id: str) -> str:
     return _mqtt.approve(request_id)
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def reject_request(request_id: str, reason: str | None = None) -> str:
     """Coordinator only. Reject a pending worker request without touching
     the master db. The worker's check_request(request_id) will report
@@ -392,7 +400,7 @@ def reject_request(request_id: str, reason: str | None = None) -> str:
     return _mqtt.reject(request_id, reason)
 
 
-@mcp.tool()
+@_mqtt_tool("worker")
 def check_request(request_id: str) -> str:
     """Worker only. Poll the outcome of a request id returned by a write
     tool: {"status": "pending"} / {"status": "approved", "task": {...}} /
@@ -403,7 +411,7 @@ def check_request(request_id: str) -> str:
     return json.dumps(_mqtt.check(request_id))
 
 
-@mcp.tool()
+@_mqtt_tool("worker")
 def sync_state() -> str:
     """Worker only. Report freshness of the local read replica. The
     replica is kept current automatically by a background subscriber, so
@@ -415,7 +423,7 @@ def sync_state() -> str:
     return json.dumps(_mqtt.sync_state())
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def assign_task(
     worker_id: str,
     body: str,
@@ -437,7 +445,7 @@ def assign_task(
     return _mqtt.assign(worker_id, body, task_id, file_path)
 
 
-@mcp.tool()
+@_mqtt_tool("worker")
 def check_assignments() -> str:
     """Worker only. Drain work assignments from the coordinator since the
     last call, as {"assignments": [{message_id, from, task_id?, body,
@@ -448,7 +456,7 @@ def check_assignments() -> str:
     return _mqtt.check_assignments()
 
 
-@mcp.tool()
+@_mqtt_tool("worker")
 def report_state(state: str) -> str:
     """Worker only. Report a work-state string (e.g. idle/busy/blocked —
     whatever convention the fleet agrees on) alongside your online
@@ -463,7 +471,7 @@ def report_state(state: str) -> str:
     return json.dumps(_mqtt.report_state(state))
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator", "worker")
 def send_message(
     body: str,
     worker_id: str | None = None,
@@ -492,7 +500,7 @@ def send_message(
     return _mqtt.send_message(body, file_path)
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator", "worker")
 def check_messages() -> str:
     """Drain direct messages addressed to this node since the last call —
     reading consumes the queue, so a message is only ever returned once.
@@ -508,7 +516,7 @@ def check_messages() -> str:
     return _mqtt.check_messages()
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def broadcast(body: str, retain: bool = False, file_path: str | None = None) -> str:
     """Coordinator only. Publish a message to every worker at once.
 
@@ -525,7 +533,7 @@ def broadcast(body: str, retain: bool = False, file_path: str | None = None) -> 
     return _mqtt.broadcast(body, retain, file_path)
 
 
-@mcp.tool()
+@_mqtt_tool("worker")
 def check_broadcasts() -> str:
     """Worker only. Drain broadcast messages from the coordinator since the
     last call (including any retained broadcast received on connect).
@@ -537,7 +545,7 @@ def check_broadcasts() -> str:
     return _mqtt.check_broadcasts()
 
 
-@mcp.tool()
+@_mqtt_tool("coordinator")
 def list_workers() -> str:
     """Coordinator only. Current presence snapshot from every worker seen
     so far, built from an immediate "online" announcement plus a periodic
