@@ -120,7 +120,9 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &kind,
             unblocked,
         ),
-        Command::Next => commands::next::run(db_path, json),
+        Command::Next { project_name } => {
+            commands::next::run(db_path, json, project_name.as_deref())
+        }
         Command::Start { id, force } => commands::start::run(db_path, json, &id, force),
         Command::Stop { id } => commands::stop::run(db_path, json, &id),
         Command::Revert { id } => commands::revert::run(db_path, json, &id),

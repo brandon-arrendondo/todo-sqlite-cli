@@ -142,7 +142,11 @@ pub enum Command {
     },
 
     /// Print the single task to work on next. Order: oldest in-progress, then oldest unblocked partial, then highest-priority unblocked pending. Skips tasks with unmet deps.
-    Next,
+    Next {
+        /// Scope to just this project (exact match) — a coordinator db spanning several projects shouldn't hand back another project's task.
+        #[arg(long, value_name = "TEXT")]
+        project_name: Option<String>,
+    },
 
     /// Move a task to in-progress. Auto-pauses any prior in-progress task to `partial` (preserves its started_at).
     Start {

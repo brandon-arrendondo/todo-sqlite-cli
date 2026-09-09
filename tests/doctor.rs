@@ -49,6 +49,79 @@ fn duplicate_display_id_is_flagged_and_exits_nonzero() {
 }
 
 #[test]
+fn duplicate_display_id_across_different_projects_is_not_flagged() {
+    // A coordinator db spanning several projects has this permanently, not
+    // just transiently after a merge: each project numbers its own tasks
+    // independently, so id collisions across projects are expected and
+    // harmless (project_name plus id, or the uuid, still disambiguates).
+    let sb = Sandbox::new();
+    let a = sb.add("first");
+    let b = sb.add("second");
+
+    let conn = rusqlite::Connection::open(&sb.db).unwrap();
+    conn.execute(
+        "UPDATE tasks SET project_name = 'proj-a' WHERE id = ?1",
+        rusqlite::params![a],
+    )
+    .unwrap();
+    let b_uuid: String = conn
+        .query_row(
+            "SELECT uuid FROM tasks WHERE id = ?1",
+            rusqlite::params![b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE tasks SET id = ?1, project_name = 'proj-b' WHERE uuid = ?2",
+        rusqlite::params![a, b_uuid],
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = sb.cmd().arg("doctor").output().unwrap();
+    assert!(
+        out.status.success(),
+        "doctor should stay clean across differing projects: {:?}",
+        out
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("clean"));
+}
+
+#[test]
+fn duplicate_display_id_within_same_project_is_still_flagged() {
+    // The positive case, but with project_name set on both sides (same
+    // project) -- confirms the GROUP BY (id, project_name) still catches a
+    // real duplicate, not just an unset-vs-unset one.
+    let sb = Sandbox::new();
+    let a = sb.add("first");
+    let b = sb.add("second");
+
+    let conn = rusqlite::Connection::open(&sb.db).unwrap();
+    conn.execute(
+        "UPDATE tasks SET project_name = 'proj-a' WHERE id IN (?1, ?2)",
+        rusqlite::params![a, b],
+    )
+    .unwrap();
+    let b_uuid: String = conn
+        .query_row(
+            "SELECT uuid FROM tasks WHERE id = ?1",
+            rusqlite::params![b],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE tasks SET id = ?1 WHERE uuid = ?2",
+        rusqlite::params![a, b_uuid],
+    )
+    .unwrap();
+    drop(conn);
+
+    let out = sb.cmd().arg("doctor").output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("duplicate display ids"));
+}
+
+#[test]
 fn asymmetric_related_row_is_flagged() {
     let sb = Sandbox::new();
     let a = sb.add("a");

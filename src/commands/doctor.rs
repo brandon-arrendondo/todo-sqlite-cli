@@ -13,9 +13,13 @@ use crate::error::{system, user, CliResult};
 /// overwhelmingly legitimate noise (tags are a bad relatedness proxy, and a
 /// satisfied dep on a done task is normal) and were dropped rather than
 /// kept. What's left are conditions that are never expected in a healthy
-/// database, plus the one condition — a duplicate display id — that's
-/// expected occasionally after a merge and just needs surfacing so an
-/// operator knows `show <id>` may need a uuid to disambiguate.
+/// database, plus the one condition — a duplicate display id within the
+/// same project — that's expected occasionally after a merge and just
+/// needs surfacing so an operator knows `show <id>` may need a uuid to
+/// disambiguate. Two tasks sharing a display id under *different*
+/// `project_name`s (a coordinator db spanning several projects) is not
+/// flagged — that's the expected, permanent shape of that db, not a
+/// transient post-merge state to clean up.
 #[derive(Debug, Default, Serialize)]
 struct DoctorReport {
     duplicate_display_ids: Vec<DuplicateId>,
@@ -68,18 +72,27 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
 
     // Duplicate display ids: expected occasionally after a merge (identity
     // is the uuid, not this), but worth surfacing so an operator knows
-    // `show <id>` may come back ambiguous until they pick a uuid.
+    // `show <id>` may come back ambiguous until they pick a uuid. Grouped
+    // by (id, project_name) — SQLite's GROUP BY treats NULL project_name
+    // as one bucket, same as any other value, so a standalone (non-
+    // coordinator) db with every project_name unset behaves exactly as
+    // before. Two tasks sharing an id under different projects is the
+    // expected, permanent shape of a multi-project coordinator db, not a
+    // duplicate to flag.
     {
         let mut stmt = conn
-            .prepare("SELECT id FROM tasks GROUP BY id HAVING COUNT(*) > 1 ORDER BY id")
+            .prepare(
+                "SELECT id, project_name FROM tasks
+                 GROUP BY id, project_name HAVING COUNT(*) > 1 ORDER BY id",
+            )
             .map_err(|e| system(format!("prepare failed: {e}")))?;
-        let ids: Vec<i64> = stmt
-            .query_map([], |r| r.get(0))
+        let ids: Vec<(i64, Option<String>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(|e| system(format!("query failed: {e}")))?
             .collect::<Result<_, _>>()
             .map_err(|e| system(format!("row read failed: {e}")))?;
-        for id in ids {
-            let tasks = task_refs_by_id(&conn, id)?;
+        for (id, project_name) in ids {
+            let tasks = task_refs_by_id(&conn, id, project_name.as_deref())?;
             report.duplicate_display_ids.push(DuplicateId { id, tasks });
         }
     }
@@ -189,12 +202,21 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     }
 }
 
-fn task_refs_by_id(conn: &rusqlite::Connection, id: i64) -> CliResult<Vec<TaskRef>> {
+fn task_refs_by_id(
+    conn: &rusqlite::Connection,
+    id: i64,
+    project_name: Option<&str>,
+) -> CliResult<Vec<TaskRef>> {
+    // `project_name IS ?1` (not `=`) so NULL matches NULL, mirroring the
+    // GROUP BY that found this bucket in the first place.
     let mut stmt = conn
-        .prepare("SELECT id, uuid, title FROM tasks WHERE id = ?1 ORDER BY uuid")
+        .prepare(
+            "SELECT id, uuid, title FROM tasks
+             WHERE id = ?1 AND project_name IS ?2 ORDER BY uuid",
+        )
         .map_err(|e| system(format!("prepare failed: {e}")))?;
     let rows = stmt
-        .query_map(rusqlite::params![id], |r| {
+        .query_map(rusqlite::params![id, project_name], |r| {
             Ok(TaskRef {
                 id: r.get(0)?,
                 uuid: r.get(1)?,

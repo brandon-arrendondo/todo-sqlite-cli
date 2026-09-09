@@ -102,13 +102,20 @@ def list_tasks(
 
 
 @mcp.tool()
-def next_task() -> str:
+def next_task(project_name: str | None = None) -> str:
     """Return the single highest-priority task to work on next as JSON.
 
     Order: oldest in-progress → oldest unblocked partial → highest-priority
     unblocked pending. Returns a bare task object, or empty string if none.
+
+    project_name: scope to just this project (exact match) — pass yours on
+        a coordinator db spanning several projects, or it may hand back
+        another project's task if it outranks everything in your own.
     """
-    return _run("next", "--json")
+    args = ["next", "--json"]
+    if project_name:
+        args += ["--project-name", project_name]
+    return _run(*args)
 
 
 @mcp.tool()

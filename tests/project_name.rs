@@ -119,6 +119,50 @@ fn list_filters_by_project_name() {
 }
 
 #[test]
+fn next_scopes_to_project_name() {
+    // Without a filter, next hands back whichever unblocked pending task
+    // outranks the rest across every project -- here, the higher-priority
+    // task in a *different* project than the one we ask to be scoped to.
+    let sb = Sandbox::new();
+    sb.add_with(&[
+        "other project's urgent task",
+        "--priority",
+        "1",
+        "--project-name",
+        "other",
+    ]);
+    let mine = sb.add_with(&[
+        "my project's task",
+        "--priority",
+        "3",
+        "--project-name",
+        "mine",
+    ]);
+
+    let out = sb
+        .cmd()
+        .args(["next", "--project-name", "mine", "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["id"].as_i64().unwrap(), mine);
+    assert_eq!(v["project_name"].as_str().unwrap(), "mine");
+}
+
+#[test]
+fn next_project_name_filter_returns_null_when_that_project_has_nothing_actionable() {
+    let sb = Sandbox::new();
+    sb.add_with(&["some other project's task", "--project-name", "other"]);
+
+    let out = sb
+        .cmd()
+        .args(["next", "--project-name", "mine", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "null");
+}
+
+#[test]
 fn project_name_survives_a_clean_two_way_merge() {
     let sb = Sandbox::new();
     let a = sb.add_with(&["task a", "--project-name", "widgets"]);

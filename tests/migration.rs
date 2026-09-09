@@ -570,9 +570,11 @@ fn v5_database_migrates_to_v8_on_open() {
         .unwrap();
     assert_eq!(implementation_client, None);
     let project_name: Option<String> = conn
-        .query_row("SELECT project_name FROM tasks WHERE title = 'a'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT project_name FROM tasks WHERE title = 'a'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(project_name, None);
 
@@ -771,9 +773,11 @@ fn v7_database_migrates_to_v8_on_open() {
 
     // Pre-existing row defaults project_name to NULL.
     let project_name: Option<String> = conn
-        .query_row("SELECT project_name FROM tasks WHERE title = 'a'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT project_name FROM tasks WHERE title = 'a'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(project_name, None);
 }

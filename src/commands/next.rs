@@ -6,7 +6,7 @@ use crate::db::{self, Task};
 use crate::error::{system, user, CliResult};
 use crate::format;
 
-pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
+pub fn run(db_path: &Path, json: bool, project_name: Option<&str>) -> CliResult<()> {
     let conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
         return Err(user(
@@ -18,13 +18,20 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     // partial episode that makes sense for it; someone periodically
     // re-assesses its condition and calls `done` directly. Exclude gates
     // from every tier below rather than surfacing one.
+    //
+    // project_name, when given, scopes every tier to just that project — a
+    // coordinator db spanning several projects shouldn't hand a worker
+    // another project's task just because it outranks everything in its
+    // own. `?1 IS NULL OR project_name = ?1` lets one query handle both
+    // the scoped and unscoped (None, a standalone db's usual case) forms.
 
     // 1. Oldest in-progress
     let winner: Option<String> = conn
         .query_row(
             "SELECT uuid FROM tasks WHERE status = 'in-progress' AND is_gate = 0 \
+             AND (?1 IS NULL OR project_name = ?1) \
              ORDER BY started_at ASC, id ASC LIMIT 1",
-            [],
+            rusqlite::params![project_name],
             |r| r.get(0),
         )
         .ok();
@@ -36,13 +43,14 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
             .query_row(
                 "SELECT uuid FROM tasks t \
                  WHERE status = 'partial' AND is_gate = 0 \
+                   AND (?1 IS NULL OR project_name = ?1) \
                    AND NOT EXISTS (\
                      SELECT 1 FROM deps d \
                      JOIN tasks td ON td.uuid = d.depends_on_uuid \
                      WHERE d.task_uuid = t.uuid AND td.status <> 'done'\
                    ) \
                  ORDER BY priority ASC, started_at ASC, id ASC LIMIT 1",
-                [],
+                rusqlite::params![project_name],
                 |r| r.get(0),
             )
             .ok(),
@@ -55,13 +63,14 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
             .query_row(
                 "SELECT uuid FROM tasks t \
                  WHERE status = 'pending' AND is_gate = 0 \
+                   AND (?1 IS NULL OR project_name = ?1) \
                    AND NOT EXISTS (\
                      SELECT 1 FROM deps d \
                      JOIN tasks td ON td.uuid = d.depends_on_uuid \
                      WHERE d.task_uuid = t.uuid AND td.status <> 'done'\
                    ) \
                  ORDER BY priority ASC, created_at ASC, id ASC LIMIT 1",
-                [],
+                rusqlite::params![project_name],
                 |r| r.get(0),
             )
             .ok(),
@@ -79,7 +88,7 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
         None => {
             if json {
                 println!("null");
-            } else if has_open_gate(&conn)? {
+            } else if has_open_gate(&conn, project_name)? {
                 eprintln!(
                     "no actionable task — only gate(s) remain open; see `todo-sqlite-cli list --kind gate`"
                 );
@@ -91,12 +100,13 @@ pub fn run(db_path: &Path, json: bool) -> CliResult<()> {
     Ok(())
 }
 
-fn has_open_gate(conn: &Connection) -> CliResult<bool> {
+fn has_open_gate(conn: &Connection, project_name: Option<&str>) -> CliResult<bool> {
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM tasks \
-             WHERE is_gate = 1 AND status IN ('pending','partial','in-progress')",
-            [],
+             WHERE is_gate = 1 AND status IN ('pending','partial','in-progress') \
+               AND (?1 IS NULL OR project_name = ?1)",
+            rusqlite::params![project_name],
             |r| r.get(0),
         )
         .map_err(|e| system(format!("query failed: {e}")))?;
