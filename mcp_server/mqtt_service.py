@@ -550,10 +550,22 @@ class WorkerService:
                 self._local[response["request_id"]] = response
         elif msg.topic == self.config.state_topic:
             payload = json.loads(msg.payload.decode())
-            data = base64.b64decode(payload["snapshot_b64"])
-            _atomic_replace(self.config.worker_db_path, data)
+            ts = payload["ts"]
             with self._lock:
-                self._last_synced = payload["ts"]
+                # A reconnect can deliver an older snapshot after a newer
+                # one: resubscribing (needed so a fresh process or a
+                # post-blip reconnect re-establishes cleanly) triggers an
+                # immediate retained-message redelivery of the CURRENT
+                # snapshot, which can arrive before the persistent
+                # session's own queued backlog from the offline window
+                # finishes draining — without this guard, "last message
+                # wins" would then let that queued-but-stale backlog
+                # overwrite the fresher retained one it just applied.
+                if self._last_synced is not None and ts <= self._last_synced:
+                    return
+                data = base64.b64decode(payload["snapshot_b64"])
+                _atomic_replace(self.config.worker_db_path, data)
+                self._last_synced = ts
         elif msg.topic == self.config.messages_to_worker_topic(cid):
             self._messages.add(self._land_file(json.loads(msg.payload.decode())))
         elif msg.topic == self.config.assign_topic(cid):
