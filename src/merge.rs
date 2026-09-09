@@ -27,6 +27,7 @@ struct RawTask {
     completed_at: Option<String>,
     location: Option<String>,
     implementation_client: Option<String>,
+    project_name: Option<String>,
     tags: Vec<String>,
     deps: Vec<String>,
     related: Vec<String>,
@@ -47,6 +48,7 @@ struct MergedTask {
     completed_at: Option<String>,
     location: Option<String>,
     implementation_client: Option<String>,
+    project_name: Option<String>,
     tags: HashSet<String>,
     deps: HashSet<String>,
     related: HashSet<String>,
@@ -273,6 +275,7 @@ fn fields_equal(a: &RawTask, b: &RawTask) -> bool {
         && a.is_gate == b.is_gate
         && a.location == b.location
         && a.implementation_client == b.implementation_client
+        && a.project_name == b.project_name
 }
 
 fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
@@ -289,6 +292,7 @@ fn raw_to_merged(t: &RawTask, conflict: bool) -> MergedTask {
         completed_at: t.completed_at.clone(),
         location: t.location.clone(),
         implementation_client: t.implementation_client.clone(),
+        project_name: t.project_name.clone(),
         tags: t.tags.iter().cloned().collect(),
         deps: t.deps.iter().cloned().collect(),
         related: t.related.iter().cloned().collect(),
@@ -462,6 +466,25 @@ fn merge_common(
         ours.implementation_client.clone()
     };
 
+    // project_name
+    let project_name = if ours.project_name == theirs.project_name {
+        ours.project_name.clone()
+    } else if ours.project_name == base.project_name {
+        theirs.project_name.clone()
+    } else if theirs.project_name == base.project_name {
+        ours.project_name.clone()
+    } else {
+        conflict = true;
+        report.conflicts.push(ConflictNote {
+            task_id: base.id,
+            field: "project_name".into(),
+            ours: ours.project_name.clone().unwrap_or_default(),
+            theirs: theirs.project_name.clone().unwrap_or_default(),
+            resolution: "kept ours".into(),
+        });
+        ours.project_name.clone()
+    };
+
     // is_gate
     let is_gate = if ours.is_gate == theirs.is_gate {
         ours.is_gate
@@ -515,6 +538,7 @@ fn merge_common(
         completed_at,
         location,
         implementation_client,
+        project_name,
         tags,
         deps,
         related,
@@ -555,6 +579,7 @@ fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeRepo
     let is_gate = field!("is_gate", is_gate);
     let location = field!("location", location);
     let implementation_client = field!("implementation_client", implementation_client);
+    let project_name = field!("project_name", project_name);
 
     let (started_at, completed_at) = if status == ours.status {
         (ours.started_at.clone(), ours.completed_at.clone())
@@ -594,6 +619,7 @@ fn merge_common_no_base(ours: &RawTask, theirs: &RawTask, report: &mut MergeRepo
         completed_at,
         location,
         implementation_client,
+        project_name,
         tags,
         deps,
         related,
@@ -644,6 +670,7 @@ fn load_all(conn: &Connection) -> CliResult<Vec<RawTask>> {
                 completed_at: r.get(9)?,
                 location: r.get(10)?,
                 implementation_client: r.get(11)?,
+                project_name: r.get(12)?,
                 tags: Vec::new(),
                 deps: Vec::new(),
                 related: Vec::new(),
@@ -680,8 +707,8 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
     // that sorts later in `merged`, and depends_on_uuid is a foreign key.
     for t in merged {
         tx.execute(
-            "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at, location, implementation_client)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, completed_at, location, implementation_client, project_name)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 t.uuid,
                 t.id,
@@ -695,6 +722,7 @@ fn write_output(merged: &[MergedTask], out_path: &Path, opts: MergeOptions) -> C
                 t.completed_at,
                 t.location,
                 t.implementation_client,
+                t.project_name,
             ],
         )
         .map_err(|e| system(format!("task insert failed: {e}")))?;

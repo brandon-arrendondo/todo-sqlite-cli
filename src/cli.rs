@@ -101,6 +101,9 @@ pub enum Command {
         /// MQTT client id that claimed this task (optional coordinator/worker sync feature). Usually left unset and auto-stamped later; see `edit --implementation-client`.
         #[arg(long = "implementation-client", value_name = "CLIENT_ID")]
         implementation_client: Option<String>,
+        /// Which project this task belongs to, for a coordinator's db spanning several projects. Shown as a `+project` prefix in `list`.
+        #[arg(long, value_name = "TEXT")]
+        project_name: Option<String>,
     },
 
     /// List tasks. Default shows active work (in-progress + partial + pending), in-progress first then partial then pending; within each, by priority.
@@ -111,6 +114,9 @@ pub enum Command {
         /// Filter by tag. Repeatable; multiple tags AND together.
         #[arg(long = "tag", value_name = "TAG")]
         tags: Vec<String>,
+        /// Filter by project name (exact match).
+        #[arg(long, value_name = "TEXT")]
+        project_name: Option<String>,
         /// Cap the number of rows returned.
         #[arg(long)]
         limit: Option<i64>,
@@ -237,6 +243,12 @@ pub enum Command {
         /// Clear the implementation_client field.
         #[arg(long)]
         clear_implementation_client: bool,
+        /// Set which project this task belongs to. Mutually exclusive with `--clear-project-name`.
+        #[arg(long, value_name = "TEXT")]
+        project_name: Option<String>,
+        /// Clear the project_name field.
+        #[arg(long)]
+        clear_project_name: bool,
     },
 
     /// Reassign a task's display id — for resolving a duplicate id left by a

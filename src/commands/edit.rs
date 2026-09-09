@@ -28,6 +28,8 @@ pub fn run(
     rm_related: &[String],
     implementation_client: Option<&str>,
     clear_implementation_client: bool,
+    project_name: Option<&str>,
+    clear_project_name: bool,
 ) -> CliResult<()> {
     let mut conn = db::open(db_path)?;
     if !db::is_initialized(&conn) {
@@ -64,6 +66,7 @@ pub fn run(
         implementation_client,
         clear_implementation_client,
     )?;
+    apply_project_name(&tx, &uuid, project_name, clear_project_name)?;
     apply_related(&tx, &uuid, &add_related_uuids, &rm_related_uuids)?;
 
     tx.commit()
@@ -315,6 +318,36 @@ fn apply_implementation_client(
     if clear_implementation_client {
         tx.execute(
             "UPDATE tasks SET implementation_client = NULL WHERE uuid = ?1",
+            params![uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Apply the mutually-exclusive project_name edits, same mutex pattern as
+/// `apply_location`'s `--location`/`--clear-location`.
+fn apply_project_name(
+    tx: &rusqlite::Transaction,
+    uuid: &str,
+    project_name: Option<&str>,
+    clear_project_name: bool,
+) -> CliResult<()> {
+    if project_name.is_some() && clear_project_name {
+        return Err(user(
+            "--project-name and --clear-project-name are mutually exclusive",
+        ));
+    }
+    if let Some(p) = project_name {
+        tx.execute(
+            "UPDATE tasks SET project_name = ?1 WHERE uuid = ?2",
+            params![p, uuid],
+        )
+        .map_err(|e| system(format!("update failed: {e}")))?;
+    }
+    if clear_project_name {
+        tx.execute(
+            "UPDATE tasks SET project_name = NULL WHERE uuid = ?1",
             params![uuid],
         )
         .map_err(|e| system(format!("update failed: {e}")))?;

@@ -13,6 +13,7 @@ pub fn run(
     json: bool,
     status: &str,
     tags: &[String],
+    project_name: Option<&str>,
     limit: Option<i64>,
     fmt: &str,
     since: Option<&str>,
@@ -28,7 +29,7 @@ pub fn run(
         ));
     }
 
-    let (sql, params) = build_list_query(status, tags, since, limit, kind)?;
+    let (sql, params) = build_list_query(status, tags, project_name, since, limit, kind)?;
 
     let mut stmt = conn
         .prepare(&sql)
@@ -75,6 +76,7 @@ pub fn run(
 fn build_list_query(
     status: &str,
     tags: &[String],
+    project_name: Option<&str>,
     since: Option<&str>,
     limit: Option<i64>,
     kind: &str,
@@ -116,6 +118,12 @@ fn build_list_query(
             " AND uuid IN (SELECT task_uuid FROM tags WHERE tag = ?{idx})"
         ));
         params.push(Value::Text(tag.clone()));
+    }
+
+    if let Some(p) = project_name {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND project_name = ?{idx}"));
+        params.push(Value::Text(p.to_string()));
     }
 
     if let Some(s) = since {

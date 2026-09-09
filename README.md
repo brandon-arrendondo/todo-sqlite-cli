@@ -109,6 +109,18 @@ feature below; set it directly with `--implementation-client`/
 auto-stamp it. Unlike `started_at`, it's sticky — `stop`/`revert` never
 clear it. Shows as a `Client:` line on `show` only (no `list` suffix).
 
+A coordinator's db often spans several projects at once — `--project-name`
+records which one a task belongs to (todo.txt's `+project` convention). It
+shows up in `list` as a `+project` prefix on the title (alongside the
+`@location` suffix), as a `Project:` line on `show`, and `list
+--project-name <name>` filters down to just that project's tasks.
+
+```
+$ todo-sqlite-cli add "replace intake filter" --project-name warehouse-refit --location warehouse-3
+$ todo-sqlite-cli list --project-name warehouse-refit
+   1  pending      P3  replace intake filter +warehouse-refit @warehouse-3
+```
+
 ## Merging
 
 The DB can be checked into git like any other file — many projects want the

@@ -23,6 +23,7 @@ def add_args(
     location=None,
     related=None,
     implementation_client=None,
+    project_name=None,
 ):
     args = ["add", title, "--priority", str(priority)]
     if details:
@@ -39,6 +40,8 @@ def add_args(
         args += ["--related", str(r)]
     if implementation_client:
         args += ["--implementation-client", implementation_client]
+    if project_name:
+        args += ["--project-name", project_name]
     return args
 
 
@@ -60,6 +63,8 @@ def edit_args(
     rm_related=None,
     implementation_client=None,
     clear_implementation_client=False,
+    project_name=None,
+    clear_project_name=False,
 ):
     args = ["edit", str(id)]
     if title:
@@ -92,6 +97,10 @@ def edit_args(
         args += ["--implementation-client", implementation_client]
     if clear_implementation_client:
         args.append("--clear-implementation-client")
+    if project_name:
+        args += ["--project-name", project_name]
+    if clear_project_name:
+        args.append("--clear-project-name")
     return args
 
 

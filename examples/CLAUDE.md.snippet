@@ -105,6 +105,11 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   where the work must physically/logically happen (e.g. a specific node) —
   use this instead of burying it in `details` or a `--tag`. It shows as an
   `@location` suffix in `list` and a `Location:` line in `show`.
+- `--project-name <text>` on `add`/`edit` (`--clear-project-name` to unset)
+  records which project a task belongs to, for a db shared across several —
+  use this instead of a `--tag` if you also want `list --project-name
+  <name>` filtering. Shows as a `+project` prefix in `list` and a
+  `Project:` line in `show`.
 
 **Gates — a task that's a checkpoint, not work:**
 

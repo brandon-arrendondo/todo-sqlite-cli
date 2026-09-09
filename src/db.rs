@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{system, user, CliResult};
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE tasks (
@@ -21,7 +21,8 @@ CREATE TABLE tasks (
     started_at   TEXT,
     completed_at TEXT,
     location     TEXT,
-    implementation_client TEXT
+    implementation_client TEXT,
+    project_name TEXT
 );
 
 CREATE TABLE tags (
@@ -101,6 +102,9 @@ pub struct Task {
     /// coordinator approving a `start`; sticky — never auto-cleared). Unset
     /// outside the optional MQTT coordinator/worker sync feature.
     pub implementation_client: Option<String>,
+    /// Which project this task belongs to, for a coordinator's db spanning
+    /// several projects. Mirrors todo.txt's `+project` convention.
+    pub project_name: Option<String>,
     /// Display ids of mutually-linked "see also" tasks. Only populated by
     /// `hydrate` (i.e. single-task commands like `show`/`add`/`edit`) —
     /// list-style commands leave this empty on purpose, and it's hidden
@@ -188,6 +192,9 @@ fn migrate(conn: &Connection) -> CliResult<()> {
     }
     if current <= 6 {
         migrate_v6_to_v7(conn)?;
+    }
+    if current <= 7 {
+        migrate_v7_to_v8(conn)?;
     }
     Ok(())
 }
@@ -588,6 +595,22 @@ fn migrate_v6_to_v7(conn: &Connection) -> CliResult<()> {
     Ok(())
 }
 
+/// Adds `tasks.project_name`, so a coordinator's db can hold tasks spanning
+/// several projects and still tell them apart — bringing the schema in line
+/// with todo.txt's `+project` convention (`location`/`@context` already
+/// mirrors its `@context`). Like v5->v6 and v6->v7, a plain nullable column
+/// add, no Rust-generated values needed.
+fn migrate_v7_to_v8(conn: &Connection) -> CliResult<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE tasks ADD COLUMN project_name TEXT;
+        UPDATE meta SET value = '8' WHERE key = 'schema_version';
+        "#,
+    )
+    .map_err(|e| system(format!("v7->v8 migration failed: {e}")))?;
+    Ok(())
+}
+
 pub fn create_schema(conn: &Connection) -> CliResult<()> {
     conn.execute_batch(SCHEMA_SQL)
         .map_err(|e| system(format!("schema create failed: {e}")))?;
@@ -655,7 +678,7 @@ pub fn is_initialized(conn: &Connection) -> bool {
 /// this codebase uses. Shared so a query built anywhere can hand its rows
 /// straight to `row_to_task_base` instead of re-deriving the column list.
 pub const TASK_COLUMNS: &str =
-    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at, location, implementation_client";
+    "id, uuid, title, details, status, priority, is_gate, created_at, started_at, completed_at, location, implementation_client, project_name";
 
 pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -674,6 +697,7 @@ pub fn row_to_task_base(row: &Row) -> rusqlite::Result<Task> {
         completed_at: row.get(9)?,
         location: row.get(10)?,
         implementation_client: row.get(11)?,
+        project_name: row.get(12)?,
         related: Vec::new(),
     })
 }

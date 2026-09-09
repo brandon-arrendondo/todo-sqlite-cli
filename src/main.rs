@@ -79,6 +79,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             location,
             related,
             implementation_client,
+            project_name,
         } => commands::add::run(
             db_path,
             json,
@@ -92,10 +93,12 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             location.as_deref(),
             &related,
             implementation_client.as_deref(),
+            project_name.as_deref(),
         ),
         Command::List {
             status,
             tags,
+            project_name,
             limit,
             format,
             since,
@@ -108,6 +111,7 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             json,
             &status,
             &tags,
+            project_name.as_deref(),
             limit,
             &format,
             since.as_deref(),
@@ -145,6 +149,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             rm_related,
             implementation_client,
             clear_implementation_client,
+            project_name,
+            clear_project_name,
         } => commands::edit::run(
             db_path,
             json,
@@ -166,6 +172,8 @@ fn run_command(cmd: Command, db_path: &std::path::Path, json: bool) -> CliResult
             &rm_related,
             implementation_client.as_deref(),
             clear_implementation_client,
+            project_name.as_deref(),
+            clear_project_name,
         ),
         Command::Renumber { id, new_id, force } => {
             commands::renumber::run(db_path, json, &id, new_id, force)

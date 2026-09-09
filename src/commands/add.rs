@@ -20,6 +20,7 @@ pub fn run(
     location: Option<&str>,
     related: &[String],
     implementation_client: Option<&str>,
+    project_name: Option<&str>,
 ) -> CliResult<()> {
     if title.trim().is_empty() {
         return Err(user("title must not be empty"));
@@ -70,8 +71,8 @@ pub fn run(
         .map_err(|e| system(format!("next id query failed: {e}")))?;
 
     tx.execute(
-        "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, location, implementation_client)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO tasks(uuid, id, title, details, status, priority, is_gate, created_at, started_at, location, implementation_client, project_name)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             uuid,
             id,
@@ -84,6 +85,7 @@ pub fn run(
             started_at,
             location,
             implementation_client,
+            project_name,
         ],
     )
     .map_err(|e| system(format!("insert failed: {e}")))?;

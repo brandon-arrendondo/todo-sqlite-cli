@@ -87,7 +87,13 @@ below),
 .B \-\-implementation-client \fICLIENT_ID\fR
 (optional MQTT coordinator/worker sync feature \(em records which client
 claimed this task; usually left unset and stamped later via
-.BR "edit \-\-implementation-client" ).
+.BR "edit \-\-implementation-client" ),
+.B \-\-project-name \fITEXT\fR
+(which project this task belongs to, for a coordinator's db spanning
+several; shown as a
+.I +project
+prefix in
+.BR list ).
 .TP
 .B list
 List tasks. Default shows active work (in-progress, partial, and pending),
@@ -95,6 +101,8 @@ ordered in-progress first, then partial, then pending; within each, by
 priority. Flags:
 .B \-\-status pending|partial|in-progress|done|rejected|active|all,
 .B \-\-tag \fITAG\fR,
+.B \-\-project-name \fITEXT\fR
+(exact match),
 .B \-\-limit \fIN\fR,
 .B \-\-format table|json|ndjson|markdown
 (json wraps in
@@ -184,6 +192,8 @@ is the default).
 Includes a
 .I Related:
 line (linked tasks' current display ids), a
+.I Project:
+line, a
 .I Location:
 line, and a
 .I Client:
@@ -232,7 +242,11 @@ to this one),
 .B \-\-implementation-client \fICLIENT_ID\fR
 (mutually exclusive with
 .BR \-\-clear-implementation-client ),
-.B \-\-clear-implementation-client.
+.B \-\-clear-implementation-client,
+.B \-\-project-name \fITEXT\fR
+(mutually exclusive with
+.BR \-\-clear-project-name ),
+.B \-\-clear-project-name.
 .TP
 .B rm \fIID\fR
 Delete a task. Cascades to associated tags and dependency edges.
@@ -510,6 +524,27 @@ line on
 .B list
 suffix, to keep table output uncluttered) and in every JSON/ndjson task
 object.
+.PP
+.B \-\-project-name \fITEXT\fR
+(on
+.BR add " or " edit ,
+with
+.B \-\-clear-project-name
+to unset it on
+.BR edit )
+records which project a task belongs to, for a coordinator's db spanning
+several at once. It shows up as a
+.I +project
+prefix on the title in
+.B list
+(todo.txt's
+.I +project
+convention) and as a
+.I Project:
+line on
+.BR show .
+.B "list \-\-project-name" \fITEXT\fR
+filters down to just that project's tasks (exact match).
 .SH MQTT SYNC (OPTIONAL)
 The bundled Python MCP server
 .RI ( mcp_server/server.py )
@@ -617,6 +652,7 @@ without ever being flagged. A genuine conflict \(em both sides changed the
 same field to different values in a way that can't be ranked (title,
 .BR location ,
 .BR implementation_client ,
+.BR project_name ,
 or the rare diverging
 .B is_gate
 flip) \(em keeps

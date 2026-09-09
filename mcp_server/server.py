@@ -71,6 +71,7 @@ def _run(*args: str) -> str:
 def list_tasks(
     status: str = "active",
     tags: list[str] | None = None,
+    project_name: str | None = None,
     limit: int | None = None,
     since: str | None = None,
     unblocked: bool = False,
@@ -79,6 +80,7 @@ def list_tasks(
 
     status: pending | partial | in-progress | done | rejected | active | all
     tags: filter to tasks carrying ALL listed tags
+    project_name: filter to tasks in this project (exact match)
     limit: cap number of rows
     since: only tasks with created_at >= DATE (YYYY-MM-DD or RFC3339)
     unblocked: only include tasks with no unmet dependencies
@@ -88,6 +90,8 @@ def list_tasks(
     args = ["list", "--status", status, "--format", "json"]
     for tag in tags or []:
         args += ["--tag", tag]
+    if project_name:
+        args += ["--project-name", project_name]
     if limit is not None:
         args += ["--limit", str(limit)]
     if since:
@@ -173,6 +177,7 @@ def add_task(
     location: str | None = None,
     related: list[int] | None = None,
     implementation_client: str | None = None,
+    project_name: str | None = None,
 ) -> str:
     """Add a new task. Returns the new task as JSON.
 
@@ -187,6 +192,8 @@ def add_task(
         up on those tasks). Not blocking, unlike depends_on.
     implementation_client: MQTT client id claiming this task (optional
         coordinator/worker sync feature) — usually left unset.
+    project_name: which project this task belongs to, for a coordinator db
+        spanning several projects.
 
     In worker mode (optional MQTT sync), this submits a request to the
     coordinator instead of writing locally, and returns
@@ -204,6 +211,7 @@ def add_task(
             location=location,
             related=related,
             implementation_client=implementation_client,
+            project_name=project_name,
         ),
     )
 
@@ -276,6 +284,8 @@ def edit_task(
     rm_related: list[int] | None = None,
     implementation_client: str | None = None,
     clear_implementation_client: bool = False,
+    project_name: str | None = None,
+    clear_project_name: bool = False,
 ) -> str:
     """Edit an existing task. Returns the updated task as JSON.
 
@@ -292,6 +302,8 @@ def edit_task(
         also updates the other task; rejects linking a task to itself.
     implementation_client/clear_implementation_client: MQTT client id
         claiming this task (optional coordinator/worker sync feature),
+        or unset it (mutually exclusive).
+    project_name/clear_project_name: which project this task belongs to,
         or unset it (mutually exclusive).
 
     In worker mode (optional MQTT sync), this submits a request to the
@@ -317,6 +329,8 @@ def edit_task(
             rm_related=rm_related,
             implementation_client=implementation_client,
             clear_implementation_client=clear_implementation_client,
+            project_name=project_name,
+            clear_project_name=clear_project_name,
         ),
     )
 

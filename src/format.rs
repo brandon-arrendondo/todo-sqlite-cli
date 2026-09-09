@@ -31,6 +31,15 @@ fn location_suffix(task: &Task) -> String {
     }
 }
 
+/// ` +project` suffix for table/markdown title display (todo.txt's
+/// `+project` convention), or "" when unset.
+fn project_suffix(task: &Task) -> String {
+    match &task.project_name {
+        Some(p) if !p.is_empty() => format!(" +{p}"),
+        _ => String::new(),
+    }
+}
+
 /// Group tasks by their completion date (the date portion of `completed_at`,
 /// or "" when absent), ordered by date ascending.
 fn group_by_completed_date(tasks: &[Task]) -> std::collections::BTreeMap<String, Vec<&Task>> {
@@ -121,6 +130,9 @@ pub fn print_task_text(task: &Task, verbose: bool) {
     if !task.related.is_empty() {
         println!("Related: {}", format_related(task, ", "));
     }
+    if let Some(p) = &task.project_name {
+        println!("Project: {p}");
+    }
     if let Some(l) = &task.location {
         println!("Location: {l}");
     }
@@ -157,12 +169,13 @@ pub fn print_tasks_table(tasks: &[Task]) {
             format!(" [{}]", t.tags.join(","))
         };
         println!(
-            "{:>4}  {:<11}  P{}  {}{}{}{}{}",
+            "{:>4}  {:<11}  P{}  {}{}{}{}{}{}",
             t.id,
             t.status,
             t.priority,
             gate_prefix(t),
             t.title,
+            project_suffix(t),
             location_suffix(t),
             tags,
             blocked
@@ -190,6 +203,9 @@ pub fn markdown_task(task: &Task) -> String {
     }
     if !task.related.is_empty() {
         buf.push_str(&format!("- **Related:** {}\n", format_related(task, ", ")));
+    }
+    if let Some(p) = &task.project_name {
+        buf.push_str(&format!("- **Project:** {p}\n"));
     }
     if let Some(l) = &task.location {
         buf.push_str(&format!("- **Location:** {l}\n"));
@@ -264,6 +280,7 @@ fn markdown_todo_terse(tasks: &[Task]) -> String {
         }
         head.push_str(gate_prefix(t));
         head.push_str(&t.title);
+        head.push_str(&project_suffix(t));
         head.push_str(&location_suffix(t));
         buf.push_str(&head);
         buf.push('\n');
@@ -291,9 +308,10 @@ fn markdown_todo_verbose(tasks: &[Task]) -> String {
     for t in tasks {
         buf.push_str(&format!("# Task ID: {}\n", t.id));
         buf.push_str(&format!(
-            "# Title: {}{}{}\n",
+            "# Title: {}{}{}{}\n",
             gate_prefix(t),
             t.title,
+            project_suffix(t),
             location_suffix(t)
         ));
         buf.push_str(&format!("# Status: {}\n", t.status));
