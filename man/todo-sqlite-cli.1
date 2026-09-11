@@ -56,7 +56,21 @@ instead of the current directory; ignored when
 is passed.
 .TP
 .B add \fITITLE\fR
-Add a new task. Prints the new ID. Flags:
+Add a new task. Prints the new ID.
+.I TITLE
+(and the free-text
+.BR \-\-details / \-\-append-details
+values, here and in
+.BR edit )
+may begin with
+.B \-
+or
+.BR \-\- ;
+no
+.B \-\-
+separator or
+.B \-\-flag=value
+binding is needed. Flags:
 .B \-\-details \fITEXT\fR,
 .B \-\-tag \fITAG\fR
 (repeatable),

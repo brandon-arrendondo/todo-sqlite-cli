@@ -72,10 +72,11 @@ pub enum Command {
 
     /// Add a new task. Prints the new ID on stdout.
     Add {
-        /// Task title (short summary; required).
+        /// Task title (short summary; required). May start with `-`/`--`.
+        #[arg(allow_hyphen_values = true)]
         title: String,
-        /// Longer free-form description.
-        #[arg(long)]
+        /// Longer free-form description. May start with `-`/`--`.
+        #[arg(long, allow_hyphen_values = true)]
         details: Option<String>,
         /// Attach a tag. Repeatable: --tag foo --tag bar.
         #[arg(long = "tag", value_name = "TAG")]
@@ -196,14 +197,14 @@ pub enum Command {
     Edit {
         /// Task ID (or full UUID) to edit.
         id: String,
-        /// New title.
-        #[arg(long)]
+        /// New title. May start with `-`/`--`.
+        #[arg(long, allow_hyphen_values = true)]
         title: Option<String>,
-        /// Append text to the existing details, separated by a newline. Use this for incremental progress notes — it preserves prior context.
-        #[arg(long, value_name = "TEXT")]
+        /// Append text to the existing details, separated by a newline. Use this for incremental progress notes — it preserves prior context. May start with `-`/`--`.
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
         append_details: Option<String>,
-        /// REPLACES the entire details body, discarding whatever was there before. For a progress note, use --append-details instead.
-        #[arg(long)]
+        /// REPLACES the entire details body, discarding whatever was there before. For a progress note, use --append-details instead. May start with `-`/`--`.
+        #[arg(long, allow_hyphen_values = true)]
         details: Option<String>,
         /// Clear the details field.
         #[arg(long)]

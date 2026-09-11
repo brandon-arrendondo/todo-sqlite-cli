@@ -2,7 +2,7 @@ Incidents
 =========
 
 Real production incidents that shaped current safeguards in the merge
-engine. Kept as a permanent record — the guard each incident produced only
+engine and CLI. Kept as a permanent record — the guard each incident produced only
 makes sense in light of what it prevents.
 
 .. contents:: Contents
@@ -132,3 +132,54 @@ is ever ``open``-ed (and thus auto-migrated) for real. This closes the gap
 this incident exposed: a node that never migrated before merging against
 an already-migrated remote now gets a loud, actionable refusal instead of
 a silent mass-duplication.
+
+---------------------------------------------------------------------------
+
+Titles/details starting with ``-`` were rejected by the argument parser
+----------------------------------------------------------------------
+
+:Date: 2026-09-11
+:Reporter: Coordinator session on ``tools_sqc``'s ``fleet-tasks.db``
+:Severity: Medium — no data corrupted, but the whole ``add``/``edit`` call
+   failed. Through the MCP server's ``approve_request`` the worker's
+   request was rejected with only a parser error, and the coordinator had
+   to reconstruct and reapply the write by hand.
+:Status: **Resolved.** ``title``, ``--details`` and ``--append-details``
+   (on both ``add`` and ``edit``) are declared with clap's
+   ``allow_hyphen_values``; ``tests/hyphen_values.rs`` pins the behaviour.
+
+Summary
+~~~~~~~
+
+.. code-block:: console
+
+   $ todo-sqlite-cli add "--detect-relevance: markers match inside comments"
+   error: unexpected argument '--detect-relevance: markers match inside comments' found
+
+   $ todo-sqlite-cli edit 42 --append-details "--- new section below"
+   error: unexpected argument '--- new section below' found
+
+Hit three times in one session: once on a title, twice on an
+``--append-details`` value that began with a markdown ``---`` separator.
+
+Root cause
+~~~~~~~~~~
+
+clap treats any token with a ``-``/``--`` prefix as the start of a flag
+unless the argument it would fill explicitly opts out. The positional
+``TITLE`` and the free-text ``String`` options had not opted out, so
+ordinary content that happened to begin with a dash was parsed as an
+unknown flag. The shell-side workarounds (``-- "title"`` for the
+positional, ``--append-details="..."`` for options) are unavailable to the
+MCP server, which builds the argv mechanically in ``mcp_server/cli_ops.py``.
+
+Fix
+~~~
+
+``#[arg(allow_hyphen_values = true)]`` on ``Add::title``, ``Add::details``,
+``Edit::title``, ``Edit::details`` and ``Edit::append_details``. Known
+flags still win (``add --priority 4 "--foo"`` and ``add "--foo" --priority
+4`` both parse as intended, and ``add ok --nonsense`` still errors); the
+accepted trade-off is that a mistyped flag in the *title position* with no
+other title (``add --detials``) becomes a task titled ``--detials`` rather
+than a parse error.
