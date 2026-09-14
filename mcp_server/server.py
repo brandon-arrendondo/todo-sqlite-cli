@@ -100,7 +100,10 @@ def list_tasks(
     since: only tasks with created_at >= DATE (YYYY-MM-DD or RFC3339)
     unblocked: only include tasks with no unmet dependencies
 
-    Returns {"tasks": [...]} JSON.
+    Returns {"tasks": [...]} JSON. Each task carries both "id" (display —
+    unique per-project only, so two tasks can share one on a coordinator db
+    spanning several projects) and "uuid" (always unique); pass either to
+    show_task/edit_task/etc, preferring uuid whenever id might collide.
     """
     args = ["list", "--status", status, "--format", "json"]
     for tag in tags or []:
@@ -134,8 +137,12 @@ def next_task(project_name: str | None = None) -> str:
 
 
 @mcp.tool()
-def show_task(id: int) -> str:
-    """Show full details for a task as JSON (bare task object)."""
+def show_task(id: int | str) -> str:
+    """Show full details for a task as JSON (bare task object).
+
+    id: display id, or the full uuid (required if the display id is
+        ambiguous — see the note on start_task/edit_task/etc).
+    """
     return _run("show", str(id), "--format", "json")
 
 
@@ -194,10 +201,10 @@ def add_task(
     details: str | None = None,
     tags: list[str] | None = None,
     priority: int = 3,
-    depends_on: list[int] | None = None,
+    depends_on: list[int | str] | None = None,
     start: bool = False,
     location: str | None = None,
-    related: list[int] | None = None,
+    related: list[int | str] | None = None,
     implementation_client: str | None = None,
     project_name: str | None = None,
 ) -> str:
@@ -207,15 +214,24 @@ def add_task(
     details: longer free-form description
     tags: list of tag strings
     priority: 1 (highest) to 5 (lowest), default 3
-    depends_on: list of task IDs this task is blocked by
+    depends_on: list of task IDs (or full uuids — see id note below) this
+        task is blocked by
     start: immediately move to in-progress
     location: where this work must be done (e.g. a specific node/site)
-    related: list of task IDs to link as related work (mutual — also shows
-        up on those tasks). Not blocking, unlike depends_on.
+    related: list of task IDs (or full uuids) to link as related work
+        (mutual — also shows up on those tasks). Not blocking, unlike
+        depends_on.
     implementation_client: MQTT client id claiming this task (optional
         coordinator/worker sync feature) — usually left unset.
     project_name: which project this task belongs to, for a coordinator db
         spanning several projects.
+
+    A display id is only unique per-project; a coordinator db spanning
+    several projects (or a merge) can legitimately have two tasks sharing
+    one. Every returned task JSON carries both "id" (display) and "uuid"
+    (always unique) plus "project_name" — if a plain id turns out
+    ambiguous, the call fails with every match's id/uuid/status/title and
+    you should retry with the full uuid instead of the display id.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -238,11 +254,17 @@ def add_task(
 
 
 @mcp.tool()
-def start_task(id: int, force: bool = False) -> str:
+def start_task(id: int | str, force: bool = False) -> str:
     """Move a task to in-progress. Returns the updated task as JSON.
 
     Automatically pauses any current in-progress task to 'partial'.
     force: allow multiple in-progress tasks and skip dependency check.
+
+    id may be a display id or a full uuid. Display ids are only unique
+    per-project -- on a coordinator db spanning several projects (or after
+    a merge) two tasks can share one, in which case this call fails
+    listing every match's id/uuid/status/title; retry with the full uuid
+    (also returned as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -251,8 +273,14 @@ def start_task(id: int, force: bool = False) -> str:
 
 
 @mcp.tool()
-def stop_task(id: int) -> str:
+def stop_task(id: int | str) -> str:
     """Pause an in-progress task (moves to 'partial'). Returns updated task as JSON.
+
+    id may be a display id or a full uuid. Display ids are only unique
+    per-project -- on a coordinator db spanning several projects (or after
+    a merge) two tasks can share one, in which case this call fails
+    listing every match's id/uuid/status/title; retry with the full uuid
+    (also returned as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -261,8 +289,14 @@ def stop_task(id: int) -> str:
 
 
 @mcp.tool()
-def revert_task(id: int) -> str:
+def revert_task(id: int | str) -> str:
     """Move a task back to pending, clearing started_at. Returns updated task as JSON.
+
+    id may be a display id or a full uuid. Display ids are only unique
+    per-project -- on a coordinator db spanning several projects (or after
+    a merge) two tasks can share one, in which case this call fails
+    listing every match's id/uuid/status/title; retry with the full uuid
+    (also returned as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -271,11 +305,17 @@ def revert_task(id: int) -> str:
 
 
 @mcp.tool()
-def done_task(id: int, rejected: bool = False) -> str:
+def done_task(id: int | str, rejected: bool = False) -> str:
     """Mark a task done. Idempotent. Returns the updated task as JSON.
 
     rejected: close the task as 'rejected' (declined / won't-do) instead of
         'done'. Records completed_at but does NOT unblock dependents.
+
+    id may be a display id or a full uuid. Display ids are only unique
+    per-project -- on a coordinator db spanning several projects (or after
+    a merge) two tasks can share one, in which case this call fails
+    listing every match's id/uuid/status/title; retry with the full uuid
+    (also returned as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -285,7 +325,7 @@ def done_task(id: int, rejected: bool = False) -> str:
 
 @mcp.tool()
 def edit_task(
-    id: int,
+    id: int | str,
     title: str | None = None,
     append_details: str | None = None,
     details: str | None = None,
@@ -293,12 +333,12 @@ def edit_task(
     priority: int | None = None,
     add_tags: list[str] | None = None,
     rm_tags: list[str] | None = None,
-    add_deps: list[int] | None = None,
-    rm_deps: list[int] | None = None,
+    add_deps: list[int | str] | None = None,
+    rm_deps: list[int | str] | None = None,
     location: str | None = None,
     clear_location: bool = False,
-    add_related: list[int] | None = None,
-    rm_related: list[int] | None = None,
+    add_related: list[int | str] | None = None,
+    rm_related: list[int | str] | None = None,
     implementation_client: str | None = None,
     clear_implementation_client: bool = False,
     project_name: str | None = None,
@@ -315,13 +355,22 @@ def edit_task(
 
     location/clear_location: where the work must be done, or unset it
         (mutually exclusive).
-    add_related/rm_related: link/unlink related work by task ID. Mutual —
-        also updates the other task; rejects linking a task to itself.
+    add_deps/rm_deps: add/remove dependency links by task ID (or uuid).
+    add_related/rm_related: link/unlink related work by task ID (or uuid).
+        Mutual — also updates the other task; rejects linking a task to
+        itself.
     implementation_client/clear_implementation_client: MQTT client id
         claiming this task (optional coordinator/worker sync feature),
         or unset it (mutually exclusive).
     project_name/clear_project_name: which project this task belongs to,
         or unset it (mutually exclusive).
+
+    id (and every id in add_deps/rm_deps/add_related/rm_related) may be a
+    display id or a full uuid. Display ids are only unique per-project --
+    on a coordinator db spanning several projects (or after a merge) two
+    tasks can share one, in which case this call fails listing every
+    match's id/uuid/status/title; retry with the full uuid (also returned
+    as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of writing locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
@@ -352,15 +401,45 @@ def edit_task(
 
 
 @mcp.tool()
-def rm_task(id: int) -> str:
+def rm_task(id: int | str) -> str:
     """Delete a task permanently. Cascades to tags and dependency edges.
 
     Returns a confirmation message with the deleted task ID.
+
+    id may be a display id or a full uuid. Display ids are only unique
+    per-project -- on a coordinator db spanning several projects (or after
+    a merge) two tasks can share one, in which case this call fails
+    listing every match's id/uuid/status/title; retry with the full uuid
+    (also returned as "uuid" on every task JSON) to disambiguate.
 
     In worker mode, submits to the coordinator instead of deleting locally —
     returns {"request_id": ..., "status": "pending"}; poll check_request(id).
     """
     return _dispatch_write("rm", dict(id=id))
+
+
+@mcp.tool()
+def renumber_task(id: int | str, new_id: int, force: bool = False) -> str:
+    """Reassign a task's display id. Returns the updated task as JSON.
+
+    This is the fix for a duplicate display id — the collision a
+    coordinator db spanning several projects (or a merge) can leave
+    behind. Identity (the uuid) is unchanged and dependency edges are
+    stored by uuid internally, so dependents keep resolving correctly.
+
+    id: the task to renumber, as a display id or full uuid. A plain id
+        that matches more than one task — the exact conflict this tool
+        exists to resolve — is rejected as ambiguous; pass the uuid from
+        that error (or from list_tasks/show_task) to pick one.
+    new_id: the new display id to assign (must be a positive integer).
+    force: allow assigning a display id already in use by another task,
+        leaving both sharing it — usually only useful mid-way through
+        renumbering several colliding tasks, not as an end state.
+
+    In worker mode, submits to the coordinator instead of writing locally —
+    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """
+    return _dispatch_write("renumber", dict(id=id, new_id=new_id, force=force))
 
 
 # ---------------------------------------------------------------------------

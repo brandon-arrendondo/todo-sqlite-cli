@@ -1,4 +1,4 @@
-"""Pure `todo-sqlite-cli` argument builders for the 7 write operations.
+"""Pure `todo-sqlite-cli` argument builders for the 8 write operations.
 
 Shared by two callers that must build byte-identical CLI invocations:
 `server.py`'s MCP tools (standalone/coordinator mode, applying directly) and
@@ -9,7 +9,7 @@ dependencies, is what keeps those two paths from drifting apart.
 
 import json
 
-WRITE_OPS = ("add", "edit", "start", "stop", "done", "revert", "rm")
+WRITE_OPS = ("add", "edit", "start", "stop", "done", "revert", "rm", "renumber")
 
 
 def add_args(
@@ -130,6 +130,13 @@ def rm_args(*, id):
     return ["rm", str(id)]
 
 
+def renumber_args(*, id, new_id, force=False):
+    args = ["renumber", str(id), str(new_id)]
+    if force:
+        args.append("--force")
+    return args
+
+
 OP_BUILDERS = {
     "add": add_args,
     "edit": edit_args,
@@ -138,6 +145,7 @@ OP_BUILDERS = {
     "done": done_args,
     "revert": revert_args,
     "rm": rm_args,
+    "renumber": renumber_args,
 }
 
 
@@ -153,5 +161,11 @@ def apply_op(run, op, args):
     if op == "rm":
         run(*rm_args(**args))
         return json.dumps({"deleted": args["id"]})
+    if op == "renumber":
+        # id no longer resolves to this task once its display id has
+        # changed, so re-fetch by the uuid renumber's own JSON hands back
+        # rather than args["id"] (which may have been the old display id).
+        renumbered = json.loads(run(*renumber_args(**args), "--json"))
+        return run("show", renumbered["uuid"], "--format", "json")
     run(*OP_BUILDERS[op](**args))
     return run("show", str(args["id"]), "--format", "json")
