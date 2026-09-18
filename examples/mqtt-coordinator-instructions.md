@@ -60,6 +60,10 @@ thing blocking a worker's task list from moving forward.
   for something that should still apply to a worker that connects (or
   reconnects) later — it'll get it immediately without you resending
   anything; leave it `false` for a one-off that's only relevant right now.
+- `delete_broadcast(message_id)` — clear a retained broadcast once it's no
+  longer applicable, so a worker that connects or reconnects later doesn't
+  get a stale standing instruction. Use the `message_id` `broadcast()`
+  returned when you sent it. Has no effect on workers that already saw it.
 
 **Assigning work, separate from write requests:**
 

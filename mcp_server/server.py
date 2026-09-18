@@ -612,6 +612,22 @@ def broadcast(body: str, retain: bool = False, file_path: str | None = None) -> 
     return _mqtt.broadcast(body, retain, file_path)
 
 
+@_mqtt_tool("coordinator")
+def delete_broadcast(message_id: str) -> str:
+    """Coordinator only. Clear a retained broadcast (one previously sent
+    with retain=True) so a worker that connects or reconnects later no
+    longer receives it. Has no effect on workers that already drained it,
+    and no effect if that broadcast wasn't retained in the first place.
+
+    message_id: the id returned by the original broadcast() call.
+
+    Returns {"message_id": ..., "status": "deleted"}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("delete_broadcast requires MQTT coordinator mode")
+    return _mqtt.delete_broadcast(message_id)
+
+
 @_mqtt_tool("worker")
 def check_broadcasts() -> str:
     """Worker only. Drain broadcast messages from the coordinator since the

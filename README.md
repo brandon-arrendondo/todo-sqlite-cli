@@ -290,17 +290,17 @@ by `.gitignore` already, along with the coordinator's pending-request queue
 `*.mqtt-messages.json`, `*.mqtt-broadcasts.json`), the `mqtt-files/`
 attachment directory, and any `*mqtt*.json` config.
 
-Thirteen more MCP tools exist for MQTT sync, but each is only registered on
+Fourteen more MCP tools exist for MQTT sync, but each is only registered on
 a node whose configured mode it's valid for — a standalone deployment (no
 MQTT config) sees none of them, a coordinator sees only the coordinator (and
 shared) ones, a worker only the worker (and shared) ones. This keeps a
 node's tool list free of entries that would just error if called:
 `list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
-`assign_task` (coordinator); `check_request`, `sync_state`,
+`assign_task`, `delete_broadcast` (coordinator); `check_request`, `sync_state`,
 `check_assignments`, `report_state` (worker); `send_message`,
 `check_messages`, `broadcast`\*, `check_broadcasts`\* (\*coordinator-only
-`broadcast`/worker-only `check_broadcasts`; `send_message`/`check_messages`
-work in both modes). See
+`broadcast`/`delete_broadcast`, worker-only `check_broadcasts`;
+`send_message`/`check_messages` work in both modes). See
 [examples/mqtt-coordinator-instructions.md](examples/mqtt-coordinator-instructions.md)
 and
 [examples/mqtt-worker-instructions.md](examples/mqtt-worker-instructions.md)
@@ -351,6 +351,11 @@ shared flat topic before it.
   publish to every worker at once; `retain=true` means a worker that
   connects (or reconnects) later gets it immediately, no resend needed.
   Workers drain their broadcast queue with `check_broadcasts()`.
+- `delete_broadcast(message_id)` (coordinator only) — clear a retained
+  broadcast (one previously sent with `retain=true`) so a worker that
+  connects or reconnects later no longer receives it. No effect on a
+  broadcast that wasn't retained, and no effect on a worker that already
+  drained it.
 - `list_workers()` (coordinator only) — presence for every worker seen so
   far: `{worker_id, status, work_state, ts}` (`work_state` is whatever a
   worker last passed to `report_state()`, null if it never has). Each

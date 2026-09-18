@@ -456,6 +456,17 @@ class CoordinatorService:
         )
         return json.dumps({"message_id": message_id, "status": "sent", "retained": retain})
 
+    def delete_broadcast(self, message_id: str) -> str:
+        """Clear a retained broadcast from the broker so new (re)connecting
+        workers stop receiving it. Publishing a zero-length payload to a
+        retained topic is the standard MQTT way to erase what's retained
+        there; it is not itself delivered to currently-subscribed workers
+        as a message (paho drops empty payloads before invoking on_message).
+        Has no effect on a broadcast that wasn't published with retain=True,
+        and no effect on workers that already drained it."""
+        self._client.publish(self.config.broadcast_topic(message_id), payload=None, qos=1, retain=True)
+        return json.dumps({"message_id": message_id, "status": "deleted"})
+
     def list_workers(self) -> str:
         with self._lock:
             workers = [{"worker_id": w, **info} for w, info in self._presence.items()]
