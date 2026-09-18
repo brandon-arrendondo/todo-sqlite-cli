@@ -361,16 +361,15 @@ shared flat topic before it.
   disconnect. `ts` is always the coordinator's own receipt time (not
   whatever the worker's payload claims), so staleness is just "hasn't
   advanced in a few heartbeat intervals."
-- All of this (plus the existing request/response/state topics) rides on a
-  **persistent MQTT session** per node (`session_expiry_s`, default 24h,
-  keyed by each node's `client_id`) — a node that drops offline briefly
-  (a network blip, or the gap between one MCP process dying and the next
-  one starting) reconnects and picks up any QoS-1 messages the broker
-  queued for it meanwhile, rather than silently losing them. Since MQTT's
-  "at least once" delivery combined with resubscribing on every reconnect
-  can occasionally redeliver the same message twice, messages/broadcasts
-  are de-duplicated by `message_id` on receipt — you will never see the
-  same one twice from `check_messages`/`check_broadcasts`.
+- All of this (plus the existing request/response/state topics) uses a
+  **clean MQTT session** per node (keyed by each node's `client_id`) —
+  nodes are LAN-connected and this is a polling architecture, so a sender
+  that doesn't see its message acted on just resends it rather than
+  relying on the broker to queue messages for an offline client. Since
+  MQTT's "at least once" delivery can still occasionally redeliver the
+  same message twice, messages/broadcasts are de-duplicated by
+  `message_id` on receipt — you will never see the same one twice from
+  `check_messages`/`check_broadcasts`.
 
 A task can also carry an `implementation_client` field recording which
 client claimed it — see [Related tasks & location](#related-tasks--location)

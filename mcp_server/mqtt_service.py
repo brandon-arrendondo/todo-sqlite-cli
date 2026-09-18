@@ -54,8 +54,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
-from paho.mqtt.packettypes import PacketTypes
-from paho.mqtt.properties import Properties
 
 import cli_ops
 
@@ -75,7 +73,6 @@ class Config:
     db_path: str | None = None  # coordinator only
     worker_db_path: str | None = None  # worker only
     request_timeout_s: float = 30.0
-    session_expiry_s: int = 86400
     heartbeat_interval_s: float = 60.0  # worker only
     message_max_chars: int = 4096
     max_file_bytes: int = 1_048_576
@@ -147,13 +144,13 @@ def _make_client(
 ) -> mqtt.Client:
     """Build a connected, auto-reconnecting MQTT client.
 
-    Uses a persistent session (`clean_start=False` + `SessionExpiryInterval`)
-    keyed by the stable `client_id`, so the broker holds this client's
-    subscriptions and any QoS-1 messages published while it's briefly
-    disconnected — covering both a network blip mid-session and the gap
-    between one MCP process dying and the next one starting. Subscriptions
-    themselves are established in `on_connect`, not here, so they're
-    re-applied identically on first connect and on every reconnect.
+    Uses a clean session (`clean_start=True`) on every connect, including
+    automatic reconnects — nodes are LAN-connected (network blips are rare)
+    and this is a polling architecture, so a sender just resends if the
+    other side doesn't respond, rather than relying on the broker to queue
+    messages for an offline client. Subscriptions are established in
+    `on_connect`, not here, so they're re-applied identically on first
+    connect and on every reconnect.
     """
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -168,9 +165,7 @@ def _make_client(
         client.will_set(will_topic, will_payload, qos=1, retain=True)
     client.on_connect = on_connect
     client.reconnect_delay_set(min_delay=1, max_delay=30)
-    props = Properties(PacketTypes.CONNECT)
-    props.SessionExpiryInterval = config.session_expiry_s
-    client.connect(config.host, config.port, clean_start=False, properties=props)
+    client.connect(config.host, config.port, clean_start=True)
     client.loop_start()
     return client
 
@@ -426,10 +421,10 @@ class CoordinatorService:
         file_path: str | None = None,
     ) -> str:
         """Publish a work assignment to one worker's own assign topic.
-        Not retained — a worker still gets it on reconnect within
-        session_expiry_s via its persistent MQTT session, same as any
-        other QoS-1 message; retaining would mean a worker that reconnects
-        long after finishing the assignment sees it again as if new."""
+        Not retained — this is a polling architecture, so a coordinator
+        that doesn't see the assignment acted on just re-sends it; retaining
+        would mean a worker that reconnects long after finishing the
+        assignment sees it again as if new."""
         _check_message_length(body, self.config.message_max_chars)
         message_id = str(uuid.uuid4())
         payload = {
