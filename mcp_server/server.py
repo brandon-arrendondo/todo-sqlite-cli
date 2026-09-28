@@ -483,7 +483,8 @@ def reject_request(request_id: str, reason: str | None = None) -> str:
 def check_request(request_id: str) -> str:
     """Worker only. Poll the outcome of a request id returned by a write
     tool: {"status": "pending"} / {"status": "approved", "task": {...}} /
-    {"status": "rejected", "error": "..."}.
+    {"status": "rejected", "error": "..."}, each plus the fleet_state,
+    coordinator and link keys (see fleet_state).
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("check_request requires MQTT worker mode")
@@ -496,6 +497,8 @@ def sync_state() -> str:
     replica is kept current automatically by a background subscriber, so
     this is just a freshness check, not something that needs to be called
     before every read.
+
+    Returns {synced, last_synced, fleet_state, coordinator, link}.
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("sync_state requires MQTT worker mode")
@@ -506,29 +509,40 @@ def sync_state() -> str:
 def assign_task(
     worker_id: str,
     body: str,
-    task_id: int | None = None,
+    task_id: int | str | None = None,
+    kind: str | None = None,
     file_path: str | None = None,
 ) -> str:
     """Coordinator only. Publish a work assignment to one worker's own
     assign topic — distinct from send_message: this is specifically "here
     is what to work on next," polled by the worker via check_assignments().
 
-    task_id: optional task id this assignment refers to (informational —
-        the worker still reads full detail via show_task).
+    task_id: optional task (display id or uuid) this assignment refers to.
+        When given, it's resolved against the master db and the assignment
+        becomes a sequenced directive: it carries task_uuid, a per-(worker,
+        task) seq, and kind, so the worker can tell a newer directive for
+        the same task superseded this one.
+    kind: approve | hold | go | info (default "go"; requires task_id).
+        A later hold supersedes an earlier go/approve for the same task.
     file_path: see send_message.
 
-    Returns {"message_id": ..., "status": "sent"}.
+    Returns {"message_id", "status": "sent", task_id?, task_uuid?, seq?,
+    kind?, warning?}. warning is set when a go/approve is sent while the
+    fleet state isn't active (it's still sent; hold/info never warn).
+    Delivery and read receipts show up in list_sent().
     """
     if _mqtt is None or _mqtt_config.mode != "coordinator":
         raise RuntimeError("assign_task requires MQTT coordinator mode")
-    return _mqtt.assign(worker_id, body, task_id, file_path)
+    return _mqtt.assign(worker_id, body, task_id=task_id, file_path=file_path, kind=kind)
 
 
 @_mqtt_tool("worker")
 def check_assignments() -> str:
     """Worker only. Drain work assignments from the coordinator since the
-    last call, as {"assignments": [{message_id, from, task_id?, body,
-    file_path?, ts}, ...]}.
+    last call, as {"assignments": [{message_id, from, task_id?, task_uuid?,
+    seq?, kind?, superseded?, body, file_path?, ts}, ...], fleet_state,
+    coordinator, link}. See check_messages for superseded, the fleet_state/
+    coordinator/link keys, and the stale-link error.
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("check_assignments requires MQTT worker mode")
@@ -543,11 +557,51 @@ def report_state(state: str) -> str:
     heartbeat. Visible to the coordinator via list_workers()'s
     "work_state" field.
 
-    Returns {"worker_id": ..., "work_state": ...}.
+    Returns {"worker_id": ..., "work_state": ..., fleet_state, coordinator,
+    link}.
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("report_state requires MQTT worker mode")
     return json.dumps(_mqtt.report_state(state))
+
+
+@_mqtt_tool("worker")
+def fleet_state() -> str:
+    """Worker only. The current fleet state and link health — the same
+    three keys every worker MQTT tool reply already carries:
+
+    fleet_state: {state: active|draining|paused, note, set_at, set_by,
+        source}. active: work normally. draining: finish the current task,
+        pick up nothing new. paused: checkpoint, report_state, and stop
+        scheduling wakeups. source "default" means nothing is retained on
+        the broker, which counts as active.
+    coordinator: {status: online|offline|unknown, last_seen, age_s}.
+    link: {connected, last_rx_at, age_s, stale, stale_since} — this node's
+        own broker link.
+    """
+    if _mqtt is None or _mqtt_config.mode != "worker":
+        raise RuntimeError("fleet_state requires MQTT worker mode")
+    return json.dumps(_mqtt.fleet_state())
+
+
+@_mqtt_tool("worker")
+def latest_directive(task_id: int | str) -> str:
+    """Worker only. The effective (newest approve/hold/go) coordinator
+    directive for one task. Re-check this immediately before any
+    irreversible step (e.g. a push to main).
+
+    task_id: display id or uuid.
+
+    Returns {task_id, task_uuid, effective: {kind, seq, message_id, body,
+    ts, channel, task_id, task_uuid} | null, ok_to_act, draining,
+    fleet_state, coordinator, link}. ok_to_act is true only when the
+    effective kind is go/approve, the fleet isn't paused, and the link is
+    fresh. draining: true means finish the current task only; don't pick
+    up a new one. Raises an error on a stale link — don't act then.
+    """
+    if _mqtt is None or _mqtt_config.mode != "worker":
+        raise RuntimeError("latest_directive requires MQTT worker mode")
+    return _mqtt.latest_directive(task_id)
 
 
 @_mqtt_tool("coordinator", "worker")
@@ -555,6 +609,8 @@ def send_message(
     body: str,
     worker_id: str | None = None,
     file_path: str | None = None,
+    task_id: int | str | None = None,
+    kind: str | None = None,
 ) -> str:
     """Send a free-form direct message (up to 4096 chars by default,
     configurable via the MQTT config's message_max_chars).
@@ -566,16 +622,20 @@ def send_message(
         max_file_bytes (default 1 MB). The recipient gets a local file
         path back from check_messages(), not raw file content.
 
-    Returns {"message_id": ..., "status": "sent"}. Delivery is fire-and-
-    forget from the sender's side — there's no read receipt; check with
-    the recipient directly if you need confirmation.
+    task_id / kind: coordinator only — make this a sequenced directive
+        for a task, exactly as in assign_task, except kind defaults to
+        "info" (an info never supersedes a go/hold). Ignored in worker mode.
+
+    Returns {"message_id": ..., "status": "sent", ...}. On the coordinator,
+    list_sent() shows whether the worker has received and read it (workers
+    older than receipts support never ack, so theirs stay "sent").
     """
     if _mqtt is None:
         raise RuntimeError("send_message requires MQTT coordinator or worker mode")
     if _mqtt_config.mode == "coordinator":
         if not worker_id:
             raise RuntimeError("send_message requires worker_id in coordinator mode")
-        return _mqtt.send_message(worker_id, body, file_path)
+        return _mqtt.send_message(worker_id, body, file_path, task_id=task_id, kind=kind)
     return _mqtt.send_message(body, file_path)
 
 
@@ -588,7 +648,15 @@ def check_messages() -> str:
     "from" (the sending worker's client id).
     Worker: messages from the coordinator addressed to this worker.
 
-    Returns {"messages": [{message_id, from, to, body, file_path?, ts}, ...]}.
+    Returns {"messages": [{message_id, from, to, body, file_path?, ts,
+    task_id?, task_uuid?, seq?, kind?, superseded?}, ...], fleet_state,
+    link} (a worker's reply also carries coordinator). superseded: true
+    means a newer approve/hold/go for the same task has arrived — act on
+    latest_directive(task_id), not on this item.
+
+    If this node's broker link is stale (disconnected, or no broker
+    traffic for several heartbeat intervals), an empty drain is an error
+    rather than an empty list; a non-empty one adds link_stale_since.
     """
     if _mqtt is None:
         raise RuntimeError("check_messages requires MQTT coordinator or worker mode")
@@ -633,7 +701,9 @@ def check_broadcasts() -> str:
     """Worker only. Drain broadcast messages from the coordinator since the
     last call (including any retained broadcast received on connect).
 
-    Returns {"broadcasts": [{message_id, from, body, retain, file_path?, ts}, ...]}.
+    Returns {"broadcasts": [{message_id, from, body, retain, file_path?,
+    ts}, ...], fleet_state, coordinator, link} (plus link_stale_since on a
+    stale link — an empty drain is not an error here).
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("check_broadcasts requires MQTT worker mode")
@@ -649,13 +719,63 @@ def list_workers() -> str:
     here — judge a worker gone if its ts hasn't advanced in a few multiples
     of its heartbeat interval.
 
-    Returns {"workers": [{worker_id, status, work_state, ts}, ...]}.
-    work_state is whatever a worker last passed to report_state() (null if
-    it never has).
+    Returns {"workers": [{worker_id, status, work_state, ts, age_s}, ...],
+    link}. work_state is whatever a worker last passed to report_state()
+    (null if it never has); age_s is seconds since its last presence
+    update; link is this coordinator's own broker link health.
     """
     if _mqtt is None or _mqtt_config.mode != "coordinator":
         raise RuntimeError("list_workers requires MQTT coordinator mode")
     return _mqtt.list_workers()
+
+
+@_mqtt_tool("coordinator")
+def list_sent(worker_id: str | None = None, unread_only: bool = False) -> str:
+    """Coordinator only. Messages and assignments this coordinator has
+    sent (the most recent 1000), with delivery receipts.
+
+    worker_id: only those sent to this worker.
+    unread_only: only those not yet read.
+
+    Returns {"sent": [{message_id, worker_id, channel: message|assignment,
+    task_id, task_uuid, seq, kind, sent_at, delivered_at, read_at,
+    status: sent|delivered|read}, ...], link}. delivered = the worker's
+    MCP server received it; read = its agent drained it via
+    check_messages/check_assignments. Workers too old to send receipts
+    stay at "sent".
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("list_sent requires MQTT coordinator mode")
+    return _mqtt.list_sent(worker_id, unread_only)
+
+
+@_mqtt_tool("coordinator")
+def set_fleet_state(state: str, note: str | None = None) -> str:
+    """Coordinator only. Set the fleet-wide state, retained on the broker
+    so every worker sees it on its next poll (and on reconnect).
+
+    state: active | draining | paused. draining: workers finish their
+        current task, then pause. paused: workers checkpoint, report
+        state, and stop scheduling wakeups. The coordinator should honour
+        it too: no new go/approve directives or subagent launches.
+    note: optional free-form reason, shown to workers alongside it.
+
+    Returns {state, note, set_at, set_by, source, link, warning?}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("set_fleet_state requires MQTT coordinator mode")
+    return _mqtt.set_fleet_state(state, note)
+
+
+@_mqtt_tool("coordinator")
+def get_fleet_state() -> str:
+    """Coordinator only. The current fleet state as {state, note, set_at,
+    set_by, source, link}. source "default" means nothing is retained on
+    the broker, which counts as active.
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("get_fleet_state requires MQTT coordinator mode")
+    return _mqtt.get_fleet_state()
 
 
 def main() -> None:

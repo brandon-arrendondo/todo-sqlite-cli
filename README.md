@@ -287,17 +287,39 @@ an environment variable (`password_env`) that holds it — but the file is
 still node-local connection config, not something to commit; it's covered
 by `.gitignore` already, along with the coordinator's pending-request queue
 (`<db>.mqtt-pending.json`), the message-inbox files (`*.mqtt-inbox.json`,
-`*.mqtt-messages.json`, `*.mqtt-broadcasts.json`), the `mqtt-files/`
-attachment directory, and any `*mqtt*.json` config.
+`*.mqtt-messages.json`, `*.mqtt-broadcasts.json`), the directive, sent-log
+and receipt state files (`*.mqtt-directive-seq.json`, `*.mqtt-sent.json`,
+`*.mqtt-directives.json`), a legacy `mqtt-files/` attachment directory, and
+any `*mqtt*.json` config.
 
-Fourteen more MCP tools exist for MQTT sync, but each is only registered on
+Optional config fields, with their defaults:
+
+- `heartbeat_interval_s` (60): how often each node (coordinator and
+  worker) republishes its retained presence.
+- `stale_after_heartbeats` (3): the link counts as stale after this many
+  heartbeat intervals with no inbound broker traffic (see
+  [Fleet state, presence, and stale links](#fleet-state-presence-and-stale-links)).
+- `files_dir`: where incoming attachments land. Defaults to
+  `$XDG_STATE_HOME/todo-sqlite-cli/mqtt-files/` (falling back to
+  `~/.local/state/todo-sqlite-cli/mqtt-files/`), deliberately outside any
+  repo checkout. Before this default, attachments landed in `mqtt-files/`
+  next to the db, and one got swept into a local commit.
+- `message_max_chars` (4096), `max_file_bytes` (1 MB),
+  `request_timeout_s` (30).
+
+Older servers reject config keys they don't know. Upgrade a node's server
+before adding a new key such as `stale_after_heartbeats` to its config.
+
+Nineteen more MCP tools exist for MQTT sync, but each is only registered on
 a node whose configured mode it's valid for — a standalone deployment (no
 MQTT config) sees none of them, a coordinator sees only the coordinator (and
 shared) ones, a worker only the worker (and shared) ones. This keeps a
 node's tool list free of entries that would just error if called:
 `list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
-`assign_task`, `delete_broadcast` (coordinator); `check_request`, `sync_state`,
-`check_assignments`, `report_state` (worker); `send_message`,
+`assign_task`, `delete_broadcast`, `list_sent`, `set_fleet_state`,
+`get_fleet_state` (coordinator); `check_request`, `sync_state`,
+`check_assignments`, `report_state`, `fleet_state`, `latest_directive`
+(worker); `send_message`,
 `check_messages`, `broadcast`\*, `check_broadcasts`\* (\*coordinator-only
 `broadcast`/`delete_broadcast`, worker-only `check_broadcasts`;
 `send_message`/`check_messages` work in both modes). See
@@ -311,7 +333,7 @@ topic a worker publishes to, or reads for messages meant only for it, is
 scoped to that worker's own subtopic (`.../<its client_id>`) rather than one
 topic every worker shares — `requests/<id>`, `responses/<id>`,
 `assign/<id>`, `messages/to-coordinator/<id>`, `messages/to-worker/<id>`,
-`presence/<id>`. The coordinator subscribes to the wildcard form
+`presence/<id>`, `receipts/<id>`. The coordinator subscribes to the wildcard form
 (`requests/+`, etc.); a worker subscribes only to its own leaf. This is
 what lets a broker ACL grant each worker write access to just its own
 subtopic instead of a topic every worker must be trusted with — the same
@@ -320,14 +342,41 @@ already relies on. `broadcast` gets the same treatment for a different
 reason: each broadcast is published under its own `broadcast/<message_id>`
 subtopic, so a retained one occupies a permanent slot of its own instead of
 silently overwriting whatever standing announcement was retained on a
-shared flat topic before it.
+shared flat topic before it. The topics every worker reads, `broadcast/#`,
+`state` (the db snapshot), `fleet/state` and `coordinator/presence`, are
+written only by the coordinator.
+
+A mosquitto ACL matching this layout, with `P` standing for your
+`topic_prefix` and `%c` for the connecting client id:
+
+```
+user <coordinator-username>
+topic readwrite P/#
+
+pattern write     P/requests/%c
+pattern read      P/responses/%c
+pattern read      P/assign/%c
+pattern write     P/messages/to-coordinator/%c
+pattern read      P/messages/to-worker/%c
+pattern readwrite P/presence/%c
+pattern write     P/receipts/%c
+pattern read      P/broadcast/#
+pattern read      P/state
+pattern read      P/fleet/state
+pattern read      P/coordinator/presence
+```
+
+A worker needs `readwrite`, not just `write`, on its own `presence/%c`:
+it reads its own heartbeat back to check that its link is live.
 
 **Assignment and work-state, separate from messaging:**
 
-- `assign_task(worker_id, body, task_id=None, file_path=None)`
+- `assign_task(worker_id, body, task_id=None, kind=None, file_path=None)`
   (coordinator only) — "here is what to work on next," distinct from
-  `send_message`'s free-form notes. `task_id` is informational; the worker
-  still reads full detail via `show_task`. Workers poll with
+  `send_message`'s free-form notes. With a `task_id` it becomes a
+  sequenced directive (see
+  [Directives and receipts](#directives-and-receipts)); the worker still
+  reads full task detail via `show_task`. Workers poll with
   `check_assignments()`.
 - `report_state(state)` (worker only) — a work-state string (e.g.
   idle/busy/blocked, whatever convention the fleet agrees on), republished
@@ -337,16 +386,18 @@ shared flat topic before it.
 
 **Messaging, files, presence, and reconnection:**
 
-- `send_message(body, worker_id=..., file_path=None)` — a free-form direct
+- `send_message(body, worker_id=..., file_path=None, task_id=None, kind=None)` — a free-form direct
   message (≤ `message_max_chars`, default 4096) between one worker and the
   coordinator, in either direction, with an optional attached file (≤
   `max_file_bytes`, default 1 MB, sent inline as base64). `check_messages()`
   **drains** the recipient's queue — each message is returned exactly once,
   so there's no separate "mark as read" step. A coordinator's queue can hold
   messages from any number of workers; there's no requirement to handle them
-  immediately, they just wait. An attachment lands on disk under
-  `mqtt-files/` (configurable via `files_dir`) and the drained message
-  carries a `file_path`, never raw file bytes in tool output.
+  immediately, they just wait. An attachment lands on disk under the
+  `files_dir` (by default in the XDG state dir, see above) and the drained
+  message carries a `file_path`, never raw file bytes in tool output. On
+  the coordinator, `task_id`/`kind` make the message a sequenced
+  directive, as with `assign_task`, except that `kind` defaults to `info`.
 - `broadcast(body, retain=False, file_path=None)` (coordinator only) —
   publish to every worker at once; `retain=true` means a worker that
   connects (or reconnects) later gets it immediately, no resend needed.
@@ -357,7 +408,7 @@ shared flat topic before it.
   broadcast that wasn't retained, and no effect on a worker that already
   drained it.
 - `list_workers()` (coordinator only) — presence for every worker seen so
-  far: `{worker_id, status, work_state, ts}` (`work_state` is whatever a
+  far: `{worker_id, status, work_state, ts, age_s}` (`work_state` is whatever a
   worker last passed to `report_state()`, null if it never has). Each
   worker announces `"online"`
   immediately on connect and republishes it every `heartbeat_interval_s`
@@ -375,6 +426,92 @@ shared flat topic before it.
   same message twice, messages/broadcasts are de-duplicated by
   `message_id` on receipt — you will never see the same one twice from
   `check_messages`/`check_broadcasts`.
+
+**Fleet state, presence, and stale links:**
+
+- `set_fleet_state(state, note=None)` / `get_fleet_state()` (coordinator)
+  set and read a retained fleet-wide state:
+  - `active`: work normally.
+  - `draining`: finish the current task, then pause.
+  - `paused`: checkpoint, `report_state`, and stop scheduling wakeups.
+  Nothing retained means `active`. This is the soft "Level A" switch: it
+  relies on agents cooperating.
+- Every worker MQTT tool reply (`check_messages`, `check_assignments`,
+  `check_broadcasts`, `sync_state`, `check_request`, `report_state`,
+  `latest_directive`, and the pending reply from every write tool) carries
+  three extra keys, so an agent sees them on its next poll without a
+  separate call. `fleet_state()` returns just those keys:
+  - `fleet_state`: `{state, note, set_at, set_by, source}`.
+  - `coordinator`: `{status: online|offline|unknown, last_seen, age_s}`.
+    The coordinator heartbeats a retained `online` on `coordinator/presence`
+    every `heartbeat_interval_s`, with a Last-Will `offline` for a crash and
+    an explicit `offline` on a clean exit. It reads `online` only while
+    heartbeats keep arriving. A coordinator too old to publish presence
+    shows as `unknown`.
+  - `link`: `{connected, last_rx_at, age_s, stale, stale_since}`, this
+    node's own broker link. Each side reads its own retained presence back,
+    so any inbound traffic proves the link is alive. The link is stale
+    after a disconnect, or after `stale_after_heartbeats` intervals of
+    silence.
+- On a stale link, an empty `check_messages`/`check_assignments` drain (on
+  either side) and `latest_directive` are **errors** rather than empty
+  results. The error says: "do not act on silence; report_state and retry
+  next poll". A non-empty drain still returns its items, plus
+  `link_stale_since`. This came out of a coordinator link that went silent
+  for ~70 minutes while local MCP calls kept succeeding.
+- If you roll the coordinator back to a version without presence, clear
+  the retained `offline` it left behind (`mosquitto_pub -r -n -t
+  P/coordinator/presence`), or workers keep reporting it offline.
+
+**Directives and receipts:**
+
+- An `assign_task`/`send_message` with a `task_id` is a **directive**. The
+  coordinator resolves the task (display id or uuid) against the master db
+  and stamps `task_uuid`, a `kind` (`approve|hold|go|info`) and a `seq`
+  that strictly increases per (worker, task). A seq is never dense: it's
+  `max(last + 1, now in ms)`, so a lost counter file can't hand out a lower
+  one.
+- The worker marks each drained directive `superseded: true` when a newer
+  `approve`/`hold`/`go` for the same task has arrived, on either channel.
+  A `hold` therefore supersedes an earlier `go`. An `info` never supersedes
+  anything.
+- `latest_directive(task_id)` (worker) returns the effective directive,
+  plus:
+  - `ok_to_act`: true only for `go`/`approve`, with the fleet not paused
+    and a fresh link.
+  - `draining`: finish the current task only, and don't pick up a new
+    one.
+  Agents should re-check it immediately before any irreversible step, such
+  as a push to main.
+- Sending a `go`/`approve` while the fleet isn't `active` still sends it,
+  with a `warning` in the reply. A `hold`/`info` never warns, since a
+  `hold` is exactly what the coordinator sends while pausing.
+- Receipts: a worker publishes to its own `receipts/<id>` when its server
+  receives a message or assignment (`delivered`) and when its agent drains
+  it (`read`). `list_sent(worker_id=None, unread_only=False)` (coordinator)
+  shows the last 1000 sends with `sent_at`/`delivered_at`/`read_at` and
+  `status: sent|delivered|read`. A worker too old to send receipts stays
+  at `sent`.
+
+**Mixed versions:** every new field is optional on the wire. An old worker
+still works against a new coordinator: it ignores the new keys and never
+acks. A new worker still works against an old coordinator: the coordinator
+shows as `unknown` and assignments arrive unsequenced. Neither case changes
+the task db schema.
+
+**Regression check:** `mcp_server/tests/mqtt_fleet_scenario.py` starts a
+throwaway local mosquitto with the ACL above, then drives one coordinator
+and two workers over MCP stdio through every feature above: fleet state, a
+`kill -9`'d coordinator, a broker outage, go/hold supersede, receipts,
+attachments and ACL denials. It needs `mosquitto`, `mosquitto_passwd`,
+`mcp<2` and `paho-mqtt`, and skips cleanly (exit 0) if any is missing:
+
+```
+python mcp_server/tests/mqtt_fleet_scenario.py --compat-ref <older-git-ref>
+```
+
+`--compat-ref` is optional. It adds mixed-version checks against the
+server as of that ref.
 
 A task can also carry an `implementation_client` field recording which
 client claimed it — see [Related tasks & location](#related-tasks--location)
