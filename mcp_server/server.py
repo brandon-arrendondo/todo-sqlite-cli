@@ -34,7 +34,7 @@ if os.environ.get("TODO_SQLITE_CLI_MQTT_CONFIG"):
     if _mqtt_config.mode == "coordinator":
         _mqtt = mqtt_service.CoordinatorService(_mqtt_config, run=lambda *a: _run(*a))
     elif _mqtt_config.mode == "worker":
-        _mqtt = mqtt_service.WorkerService(_mqtt_config)
+        _mqtt = mqtt_service.WorkerService(_mqtt_config, run=lambda *a: _run(*a))
     else:
         raise RuntimeError(
             f"unknown MQTT mode '{_mqtt_config.mode}' (expected coordinator|worker)"
@@ -578,8 +578,10 @@ def fleet_state() -> str:
         enough that this worker derived draining/paused on its own (with
         `since`, and the real retained state under `retained`).
     coordinator: {status: online|offline|unknown, last_seen, age_s}.
-    link: {connected, last_rx_at, age_s, stale, stale_since} — this node's
-        own broker link.
+    link: {connected, last_rx_at, age_s, stale, stale_since,
+        denied_subscriptions, error} — this node's own broker link. error
+        is set when the broker ACL denies a subscription this version
+        needs.
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("fleet_state requires MQTT worker mode")
@@ -592,14 +594,18 @@ def latest_directive(task_id: int | str) -> str:
     directive for one task. Re-check this immediately before any
     irreversible step (e.g. a push to main).
 
-    task_id: display id or uuid.
+    task_id: display id or uuid, resolved through this worker's replica
+        (so a display id that renumber_task moved to another task never
+        inherits the old task's directive). An id the replica can't
+        resolve is an error.
 
     Returns {task_id, task_uuid, effective: {kind, seq, message_id, body,
     ts, channel, task_id, task_uuid} | null, ok_to_act, draining,
     fleet_state, coordinator, link}. ok_to_act is true only when the
     effective kind is go/approve, the fleet isn't paused, and the link is
     fresh. draining: true means finish the current task only; don't pick
-    up a new one. Raises an error on a stale link — don't act then.
+    up a new one. Raises an error on a stale link, or when the broker ACL
+    denies a subscription (link.error). Don't act then.
     """
     if _mqtt is None or _mqtt_config.mode != "worker":
         raise RuntimeError("latest_directive requires MQTT worker mode")
@@ -796,7 +802,8 @@ def get_fleet_state() -> str:
     "deadman" means the dead-man switch set it.
 
     deadman: {enabled, checkin_file, last_checkin, timer_from, drains_at,
-    pauses_at}. The coordinator's server process itself drains, then
+    pauses_at}. Off unless deadman_drain_after_s is configured. When on,
+    the coordinator's server process itself drains, then
     pauses, the fleet when no check-in (the checkin file's mtime, touched
     by the operator's prompt hook) has happened for the configured time.
     It only ever moves toward draining/paused, and never resumes.

@@ -83,9 +83,11 @@ as unsequenced.
 
 import atexit
 import base64
+import dataclasses
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -143,10 +145,11 @@ class Config:
     message_max_chars: int = 4096
     max_file_bytes: int = 1_048_576
     files_dir: str | None = None
-    # Dead-man switch (coordinator). Omitted -> the default; 0 or null ->
-    # that stage is disabled. Pause defaults to drain + 1h.
+    # Dead-man switch (coordinator). Off unless deadman_drain_after_s is set
+    # (> 0; 10800 is the recommended value). Pause then defaults to
+    # drain + 1h; an explicit 0 or null disables just the pause stage.
     checkin_file: str | None = None
-    deadman_drain_after_s: float | None | str = _OMITTED
+    deadman_drain_after_s: float | None = None
     deadman_pause_after_s: float | None | str = _OMITTED
     # Worker fallback when the coordinator itself is gone. Same convention;
     # paused follows at twice this.
@@ -162,14 +165,15 @@ class Config:
 
     @property
     def deadman_drain_s(self) -> float | None:
-        v = 3 * 3600.0 if self.deadman_drain_after_s == _OMITTED else self.deadman_drain_after_s
-        return v or None
+        return self.deadman_drain_after_s or None
 
     @property
     def deadman_pause_s(self) -> float | None:
+        drain = self.deadman_drain_s
+        if not drain:
+            return None  # the whole switch is off
         if self.deadman_pause_after_s == _OMITTED:
-            drain = self.deadman_drain_s
-            return drain + 3600.0 if drain else None
+            return drain + 3600.0
         return self.deadman_pause_after_s or None
 
     @property
@@ -245,12 +249,50 @@ def _state_home() -> Path:
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
 
 
+_NUMERIC_FIELDS = {
+    "port": False,
+    "request_timeout_s": False,
+    "heartbeat_interval_s": False,
+    "stale_after_heartbeats": False,
+    "message_max_chars": False,
+    "max_file_bytes": False,
+    # nullable (null disables):
+    "deadman_drain_after_s": True,
+    "deadman_pause_after_s": True,
+    "coordinator_offline_drain_after_s": True,
+}
+
+
+def _warn(message: str) -> None:
+    print(f"todo-sqlite-cli mqtt: {message}", file=sys.stderr, flush=True)
+
+
 def load_config() -> Config | None:
+    """Load the config, tolerating keys this version doesn't know (warned
+    about on stderr, then ignored) so a config written for a newer server
+    doesn't take the whole MCP server down, but rejecting a malformed
+    numeric value (e.g. "3h") loudly rather than misbehaving later."""
     path = os.environ.get(CONFIG_ENV)
     if not path:
         return None
     with open(path) as f:
         raw = json.load(f)
+    known = {f.name for f in dataclasses.fields(Config)}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        _warn(f"ignoring unknown config key(s) in {path}: {', '.join(unknown)}")
+    raw = {k: v for k, v in raw.items() if k in known}
+    for key, nullable in _NUMERIC_FIELDS.items():
+        if key not in raw:
+            continue
+        v = raw[key]
+        if v is None and nullable:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise RuntimeError(
+                f"MQTT config {path}: '{key}' must be a number of "
+                f"{'seconds' if key.endswith('_s') else 'units'}{' or null' if nullable else ''}, got {v!r}"
+            )
     return Config(**raw)
 
 
@@ -259,6 +301,8 @@ def _make_client(
     on_connect,
     on_message,
     on_disconnect=None,
+    on_subscribe=None,
+    on_publish=None,
     will_topic: str | None = None,
     will_payload: str | None = None,
 ) -> mqtt.Client:
@@ -289,6 +333,10 @@ def _make_client(
     client.on_message = on_message
     if on_disconnect is not None:
         client.on_disconnect = on_disconnect
+    if on_subscribe is not None:
+        client.on_subscribe = on_subscribe
+    if on_publish is not None:
+        client.on_publish = on_publish
     client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(config.host, config.port, clean_start=True)
     client.loop_start()
@@ -309,14 +357,26 @@ def _checkpoint_and_read(db_path: str) -> bytes:
 
 def _atomic_replace(path: str, data: bytes) -> None:
     tmp = f"{path}.tmp-{os.getpid()}"
-    Path(tmp).write_bytes(data)
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
 def _load_json(path: Path, default):
-    if path.exists():
+    """Read a JSON state file. A corrupt one (e.g. from a crash on a
+    filesystem that lost the write) is set aside as `.corrupt-<ts>` and
+    replaced by `default`, rather than crashing the server at startup."""
+    if not path.exists():
+        return default
+    try:
         return json.loads(path.read_text())
-    return default
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        aside = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        os.replace(path, aside)
+        _warn(f"{path} was unreadable ({e}); moved it to {aside} and started empty")
+        return default
 
 
 def _save_json(path: Path, data) -> None:
@@ -363,6 +423,15 @@ def _fleet_state_view(state: dict | None) -> dict:
 
 _WORKER_ADVICE = "Do not act on silence; report_state and retry next poll."
 _COORDINATOR_ADVICE = "Do not act on silence; retry next poll."
+_ACL_ADVICE = (
+    "The broker ACL predates this server version (README 'MQTT sync' rollout: update the ACL first, "
+    "then the code), so this node can't tell a quiet link from a dead one. Do not act on silence; "
+    "report this to the operator and retry next poll."
+)
+
+
+def _acl_error(link: dict) -> RuntimeError:
+    return RuntimeError(f"MQTT {link['error']}. {_ACL_ADVICE}")
 
 
 def _stale_link_error(link: dict, consequence: str, advice: str) -> RuntimeError:
@@ -379,8 +448,11 @@ def _drained_reply(key: str, items: list, context: dict, advice: str, *, raise_i
     "nothing was sent". A non-empty drain is still returned (the items are
     already consumed), flagged with `link_stale_since`."""
     link = context["link"]
-    if link["stale"] and not items and raise_if_empty:
-        raise _stale_link_error(link, f"an empty {key} result is not trustworthy", advice)
+    if not items and raise_if_empty:
+        if link["error"]:
+            raise _acl_error(link)
+        if link["stale"]:
+            raise _stale_link_error(link, f"an empty {key} result is not trustworthy", advice)
     reply = {key: items, **context}
     if link["stale"]:
         reply["link_stale_since"] = link["stale_since"]
@@ -411,12 +483,10 @@ class Mailbox:
         self._seen: OrderedDict[str, None] = OrderedDict()
 
     def _load(self) -> list[dict]:
-        if self._path.exists():
-            return json.loads(self._path.read_text())
-        return []
+        return _load_json(self._path, [])
 
     def _save(self) -> None:
-        self._path.write_text(json.dumps(self._items))
+        _save_json(self._path, self._items)
 
     def add(self, item: dict) -> None:
         with self._lock:
@@ -456,10 +526,34 @@ class LinkMonitor:
         self._connected = False
         self._disconnected_at: float | None = None
         self._last_rx_at: float | None = None
+        self._denied: dict[str, str] = {}
+        self._echo_topic: str | None = None
+        self._acks_since_echo = 0
+
+    def subscription_result(self, topic: str, denied_reason: str | None) -> None:
+        with self._lock:
+            if denied_reason is None:
+                self._denied.pop(topic, None)
+            else:
+                self._denied[topic] = denied_reason
 
     def rx(self) -> None:
         with self._lock:
             self._last_rx_at = time.time()
+
+    def presence_acked(self, echo_topic: str) -> None:
+        """The broker PUBACKed one of our presence heartbeats: that's a
+        round trip, so it counts as traffic. It also means the echo of it
+        should arrive; see echo()."""
+        with self._lock:
+            self._last_rx_at = time.time()
+            self._echo_topic = echo_topic
+            self._acks_since_echo += 1
+
+    def echo(self) -> None:
+        with self._lock:
+            self._last_rx_at = time.time()
+            self._acks_since_echo = 0
 
     def connected(self) -> None:
         with self._lock:
@@ -483,12 +577,25 @@ class LinkMonitor:
             if now - quiet_since > self._stale_after_s:
                 candidates.append(quiet_since + self._stale_after_s)
             stale_since = min(candidates) if candidates else None
+            denied = dict(self._denied)
+            # mosquitto accepts a subscription its ACL won't let it deliver
+            # (SUBACK success, then silence), so a missing read grant shows
+            # up only as heartbeats the broker acks but never echoes back.
+            if self._echo_topic and self._acks_since_echo >= 3 and self._echo_topic not in denied:
+                denied[self._echo_topic] = (
+                    f"{self._acks_since_echo} heartbeats acked by the broker but never echoed back"
+                )
+            error = None
+            if denied:
+                error = "; ".join(f"subscription to {t} denied by broker ACL ({r})" for t, r in sorted(denied.items()))
             return {
                 "connected": self._connected,
                 "last_rx_at": last,
                 "age_s": round(now - last, 1) if last is not None else None,
                 "stale": stale_since is not None,
                 "stale_since": stale_since,
+                "denied_subscriptions": denied,
+                "error": error,
             }
 
 
@@ -498,6 +605,34 @@ class _Node:
 
     def _on_disconnect(self, _client, _userdata, _flags, _reason_code, _properties):
         self._link.disconnected()
+
+    def _subscribe(self, client, topic: str) -> None:
+        # on_subscribe runs on the same network thread as on_connect (where
+        # every subscribe happens), so it can't fire before mid is recorded.
+        _result, mid = client.subscribe(topic, qos=1)
+        self._pending_subs[mid] = topic
+
+    def _on_subscribe(self, _client, _userdata, mid, reason_codes, _properties):
+        topic = self._pending_subs.pop(mid, None)
+        if topic is None:
+            return
+        rc = reason_codes[0]
+        self._link.subscription_result(topic, str(rc) if rc.is_failure else None)
+        if rc.is_failure:
+            _warn(f"subscription to {topic} denied by the broker ({rc})")
+        self._subscribed(topic, not rc.is_failure)
+
+    def _subscribed(self, topic: str, ok: bool) -> None:
+        pass
+
+    def _track_presence(self, info, topic: str):
+        self._presence_mids[info.mid] = topic
+        return info
+
+    def _on_publish(self, _client, _userdata, mid, reason_code, _properties):
+        topic = self._presence_mids.pop(mid, None)
+        if topic is not None and not reason_code.is_failure:
+            self._link.presence_acked(topic)
 
     def _start_heartbeat(self) -> None:
         self._heartbeat_stop = threading.Event()
@@ -510,8 +645,10 @@ class _Node:
             self._publish_presence(self._client, "online")
             try:
                 self._on_heartbeat()
-            except Exception:
-                pass  # never let a hook kill the heartbeat (the node would look offline)
+            except Exception as e:
+                # Never let a hook kill the heartbeat (the node would look
+                # offline), but don't hide the failure either.
+                _warn(f"heartbeat hook failed: {e!r}")
 
     def _on_heartbeat(self) -> None:
         pass
@@ -523,6 +660,7 @@ class _Node:
         that publish has actually gone out; otherwise just let the socket
         drop and the broker fire the will instead."""
         self._heartbeat_stop.set()
+        self._report_unsent()
         try:
             info = self._publish_presence(self._client, "offline")
             info.wait_for_publish(timeout=2)
@@ -530,6 +668,9 @@ class _Node:
                 self._client.disconnect()
         except Exception:
             pass
+
+    def _report_unsent(self) -> None:
+        pass
 
 
 class CoordinatorService(_Node):
@@ -557,7 +698,14 @@ class CoordinatorService(_Node):
         self._sent: dict[str, dict] = _load_json(self._sent_path, {})
         self._presence: dict[str, dict] = {}
         self._fleet_state: dict | None = None
+        # The dead-man switch must not act on a fleet state it hasn't
+        # actually learned from the broker yet (see _deadman_tick).
+        self._fleet_state_known = False
+        self._fleet_sub_acked = False
+        self._fleet_publish = None  # MQTTMessageInfo of the last fleet/state publish
         self._started_at = time.time()
+        self._pending_subs: dict[int, str] = {}
+        self._presence_mids: dict[int, str] = {}
         self._link = LinkMonitor(config.stale_after_s)
         will_payload = json.dumps({"client_id": config.client_id, "status": "offline", "ts": None})
         self._client = _make_client(
@@ -565,6 +713,8 @@ class CoordinatorService(_Node):
             on_connect=self._on_connect,
             on_message=self._on_message,
             on_disconnect=self._on_disconnect,
+            on_subscribe=self._on_subscribe,
+            on_publish=self._on_publish,
             will_topic=config.coordinator_presence_topic,
             will_payload=will_payload,
         )
@@ -574,16 +724,24 @@ class CoordinatorService(_Node):
         if reason_code.is_failure:
             return
         self._link.connected()
-        client.subscribe(self.config.requests_topic(), qos=1)
-        client.subscribe(self.config.messages_to_coordinator_topic(), qos=1)
-        client.subscribe(self.config.presence_wildcard, qos=1)
-        client.subscribe(self.config.receipts_topic(), qos=1)
+        self._subscribe(client, self.config.requests_topic())
+        self._subscribe(client, self.config.messages_to_coordinator_topic())
+        self._subscribe(client, self.config.presence_wildcard)
+        self._subscribe(client, self.config.receipts_topic())
         # Read back our own retained topics: fleet/state so a restarted
         # coordinator knows the state it last set, and coordinator/presence
-        # as the link-liveness echo of our own heartbeat.
-        client.subscribe(self.config.fleet_state_topic, qos=1)
-        client.subscribe(self.config.coordinator_presence_topic, qos=1)
+        # as the link-liveness echo of our own heartbeat. Order matters:
+        # the broker delivers fleet/state's retained message (if any)
+        # before the echo of the presence published below, so once that
+        # echo arrives, the fleet state is known even if nothing was
+        # retained.
+        self._subscribe(client, self.config.fleet_state_topic)
+        self._subscribe(client, self.config.coordinator_presence_topic)
         self._publish_presence(client, "online")
+
+    def _subscribed(self, topic: str, ok: bool) -> None:
+        if topic == self.config.fleet_state_topic and ok:
+            self._fleet_sub_acked = True
 
     def _publish_presence(self, client, status: str):
         payload = json.dumps(
@@ -594,15 +752,14 @@ class CoordinatorService(_Node):
                 "heartbeat_interval_s": self.config.heartbeat_interval_s,
             }
         )
-        return client.publish(self.config.coordinator_presence_topic, payload, qos=1, retain=True)
+        topic = self.config.coordinator_presence_topic
+        return self._track_presence(client.publish(topic, payload, qos=1, retain=True), topic)
 
     def _load_pending(self) -> dict:
-        if self._pending_path.exists():
-            return json.loads(self._pending_path.read_text())
-        return {}
+        return _load_json(self._pending_path, {})
 
     def _save_pending(self) -> None:
-        self._pending_path.write_text(json.dumps(self._pending))
+        _save_json(self._pending_path, self._pending)
 
     def _on_message(self, _client, _userdata, msg):
         self._link.rx()
@@ -610,6 +767,13 @@ class CoordinatorService(_Node):
         if msg.topic == self.config.fleet_state_topic:
             with self._lock:
                 self._fleet_state = json.loads(msg.payload.decode()) if msg.payload else None
+                self._fleet_state_known = True
+            return
+        if msg.topic == self.config.coordinator_presence_topic:
+            # Our own heartbeat echo: the rx() above is its main purpose.
+            self._link.echo()
+            if self._fleet_sub_acked:
+                self._fleet_state_known = True
             return
         if not msg.payload:
             # A cleared retained topic (e.g. delete_broadcast) — nothing to parse.
@@ -636,8 +800,6 @@ class CoordinatorService(_Node):
                 }
         elif msg.topic.startswith(f"{prefix}/receipts/"):
             self._record_receipt(msg.topic.rsplit("/", 1)[1], json.loads(msg.payload.decode()))
-        # coordinator/presence is only our own heartbeat echo: the rx()
-        # above is all it's for.
 
     def _record_receipt(self, worker_id: str, receipt: dict) -> None:
         field = {"delivered": "delivered_at", "read": "read_at"}.get(receipt.get("event"))
@@ -818,8 +980,10 @@ class CoordinatorService(_Node):
         }
         if file_path:
             payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
-        self._client.publish(self.config.messages_to_worker_topic(worker_id), json.dumps(payload), qos=1)
+        # Record before publishing: the worker's "delivered" receipt can
+        # otherwise arrive before there's an entry to attach it to.
         self._record_sent(message_id, worker_id, "message", directive, now)
+        self._client.publish(self.config.messages_to_worker_topic(worker_id), json.dumps(payload), qos=1)
         return self._sent_reply(message_id, directive)
 
     def check_messages(self) -> str:
@@ -853,8 +1017,8 @@ class CoordinatorService(_Node):
         }
         if file_path:
             payload["file"] = _encode_file(file_path, self.config.max_file_bytes)
-        self._client.publish(self.config.assign_topic(worker_id), json.dumps(payload), qos=1)
         self._record_sent(message_id, worker_id, "assignment", directive, now)
+        self._client.publish(self.config.assign_topic(worker_id), json.dumps(payload), qos=1)
         return self._sent_reply(message_id, directive)
 
     def list_sent(self, worker_id: str | None = None, unread_only: bool = False) -> str:
@@ -872,10 +1036,27 @@ class CoordinatorService(_Node):
 
     def _publish_fleet_state(self, state: str, note: str | None, set_by: str) -> dict:
         payload = {"state": state, "note": note, "set_at": time.time(), "set_by": set_by}
-        self._client.publish(self.config.fleet_state_topic, json.dumps(payload), qos=1, retain=True)
+        info = self._client.publish(self.config.fleet_state_topic, json.dumps(payload), qos=1, retain=True)
         with self._lock:
             self._fleet_state = payload
+            self._fleet_state_known = True
+            self._fleet_publish = (info, payload)
         return payload
+
+    def _report_unsent(self) -> None:
+        with self._lock:
+            pending = self._fleet_publish
+        if pending is not None and not pending[0].is_published():
+            info, payload = pending
+            try:
+                info.wait_for_publish(timeout=2)
+            except Exception:
+                pass
+            if not info.is_published():
+                _warn(
+                    f"exiting before fleet/state '{payload['state']}' (set_by {payload['set_by']}, "
+                    f"at {_iso(payload['set_at'])}) reached the broker; it was NOT published"
+                )
 
     def set_fleet_state(self, state: str, note: str | None = None) -> str:
         if state not in FLEET_STATES:
@@ -924,6 +1105,15 @@ class CoordinatorService(_Node):
         never relaxes a state (a hand-set pause stays paused), and never
         resumes on a check-in, which only resets the timer."""
         view = self._deadman_view()
+        if not view["enabled"]:
+            return
+        link = self._link.status()
+        # Only act on a fleet state actually learned from the broker, over
+        # a live link: a local None/stale copy could otherwise read as
+        # "active" and a queued draining would overwrite, on reconnect, a
+        # pause someone set by hand in the meantime.
+        if not self._fleet_state_known or link["stale"] or link["error"]:
+            return
         now = time.time()
         if view["pauses_at"] is not None and now >= view["pauses_at"]:
             target = "paused"
@@ -937,7 +1127,9 @@ class CoordinatorService(_Node):
             return
         checked_in = view["last_checkin"] is not None and view["last_checkin"] >= self._started_at
         since = _iso(view["timer_from"]) if checked_in else f"coordinator start at {_iso(view['timer_from'])}"
-        self._publish_fleet_state(target, f"dead-man: no check-in since {since}", "deadman")
+        note = f"dead-man: no check-in since {since}"
+        _warn(f"dead-man switch: setting fleet state {target} ({note})")
+        self._publish_fleet_state(target, note, "deadman")
 
     def checkin(self, note: str | None = None) -> str:
         path = self.config.checkin_path
@@ -997,11 +1189,15 @@ class WorkerService(_Node):
     three on every reply.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, run):
         if not config.worker_db_path:
             raise RuntimeError("worker mode requires 'worker_db_path' in the MQTT config")
         self.config = config
+        self.run = run  # the CLI, pinned to the local replica
         self._lock = threading.Lock()
+        self._started_at = time.time()
+        self._pending_subs: dict[int, str] = {}
+        self._presence_mids: dict[int, str] = {}
         self._local: dict[str, dict] = {}
         self._last_synced: float | None = None
         self._work_state: str | None = None
@@ -1024,6 +1220,8 @@ class WorkerService(_Node):
             on_connect=self._on_connect,
             on_message=self._on_message,
             on_disconnect=self._on_disconnect,
+            on_subscribe=self._on_subscribe,
+            on_publish=self._on_publish,
             will_topic=config.presence_topic(config.client_id),
             will_payload=will_payload,
         )
@@ -1034,15 +1232,18 @@ class WorkerService(_Node):
             return
         self._link.connected()
         cid = self.config.client_id
-        client.subscribe(self.config.responses_topic(cid), qos=1)
-        client.subscribe(self.config.state_topic, qos=1)
-        client.subscribe(self.config.messages_to_worker_topic(cid), qos=1)
-        client.subscribe(self.config.assign_topic(cid), qos=1)
-        client.subscribe(self.config.broadcast_topic(), qos=1)
-        client.subscribe(self.config.fleet_state_topic, qos=1)
-        client.subscribe(self.config.coordinator_presence_topic, qos=1)
-        # Our own presence leaf, read back as the link-liveness echo.
-        client.subscribe(self.config.presence_topic(cid), qos=1)
+        self._subscribe(client, self.config.responses_topic(cid))
+        self._subscribe(client, self.config.state_topic)
+        self._subscribe(client, self.config.messages_to_worker_topic(cid))
+        self._subscribe(client, self.config.assign_topic(cid))
+        self._subscribe(client, self.config.broadcast_topic())
+        self._subscribe(client, self.config.fleet_state_topic)
+        self._subscribe(client, self.config.coordinator_presence_topic)
+        # Our own presence leaf, read back as the link-liveness echo. An
+        # ACL from before this version grants workers write-only here; the
+        # denied SUBACK then shows up as link.error rather than as an
+        # eternally stale link.
+        self._subscribe(client, self.config.presence_topic(cid))
         self._publish_presence(client, "online")
 
     def _publish_presence(self, client, status: str):
@@ -1054,9 +1255,8 @@ class WorkerService(_Node):
                 "ts": time.time(),
             }
         )
-        return client.publish(
-            self.config.presence_topic(self.config.client_id), payload, qos=1, retain=True
-        )
+        topic = self.config.presence_topic(self.config.client_id)
+        return self._track_presence(client.publish(topic, payload, qos=1, retain=True), topic)
 
     def _ensure_replica_initialized(self) -> None:
         # So reads don't hard-fail with "not initialized" before the first
@@ -1093,7 +1293,7 @@ class WorkerService(_Node):
             # A cleared retained topic (e.g. delete_broadcast) — nothing to parse.
             return
         if msg.topic == self.config.presence_topic(cid):
-            pass  # our own heartbeat echo: the rx() above is all it's for
+            self._link.echo()  # our own heartbeat echo
         elif msg.topic == self.config.responses_topic(cid):
             response = json.loads(msg.payload.decode())
             with self._lock:
@@ -1195,13 +1395,18 @@ class WorkerService(_Node):
             c = dict(self._coordinator) if self._coordinator else None
         if c is None:
             return None
+        since = None
         if c["status"] != "online":
-            return c.get("offline_since") or c.get("last_seen")
-        last_seen = c.get("last_seen")
-        interval = c.get("heartbeat_interval_s") or self.config.heartbeat_interval_s
-        if last_seen is not None and time.time() - last_seen > interval * self.config.stale_after_heartbeats:
-            return last_seen
-        return None
+            since = c.get("offline_since") or c.get("last_seen") or time.time()
+        else:
+            last_seen = c.get("last_seen")
+            interval = c.get("heartbeat_interval_s") or self.config.heartbeat_interval_s
+            if last_seen is not None and time.time() - last_seen > interval * self.config.stale_after_heartbeats:
+                since = last_seen
+        # Floor at this process's start, like the dead-man timer: a worker
+        # started long after the coordinator went away gets the full grace
+        # period rather than deriving paused on its very first poll.
+        return max(since, self._started_at) if since is not None else None
 
     def _effective_fleet_state(self) -> dict:
         """The retained fleet state, unless the coordinator has been gone
@@ -1286,26 +1491,29 @@ class WorkerService(_Node):
         meant to be re-checked immediately before an irreversible step. A
         stale link is an error here, not a stale answer: the hold that
         cancels a go may be exactly what hasn't arrived."""
-        key = str(task_id)
-        with self._lock:
-            matches = [
-                dict(d)
-                for d in self._directives.values()
-                if d["task_uuid"] == key or str(d.get("task_id")) == key
-            ]
-        if len(matches) > 1:
-            uuids = ", ".join(d["task_uuid"] for d in matches)
-            raise RuntimeError(f"task id {task_id} matches directives for several tasks ({uuids}); pass the uuid")
         context = self._context()
         link = context["link"]
+        if link["error"]:
+            raise _acl_error(link)
         if link["stale"]:
             raise _stale_link_error(link, "a newer directive (e.g. a hold) may not have arrived", _WORKER_ADVICE)
-        effective = matches[0] if matches else None
+        # Resolve through the replica and match on uuid only: a display id
+        # stored when the directive arrived can have moved to another task
+        # since (renumber_task), and must never hand that task's go to this one.
+        try:
+            task = json.loads(self.run("show", str(task_id), "--format", "json"))
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"can't resolve task {task_id} on this worker's replica ({e}); pass the full uuid, "
+                "or check sync_state if the task is new. Don't act until it resolves."
+            ) from None
+        with self._lock:
+            effective = dict(self._directives[task["uuid"]]) if task["uuid"] in self._directives else None
         state = context["fleet_state"]["state"]
         return json.dumps(
             {
-                "task_id": task_id,
-                "task_uuid": effective["task_uuid"] if effective else None,
+                "task_id": task["id"],
+                "task_uuid": task["uuid"],
                 "effective": effective,
                 "ok_to_act": effective is not None
                 and effective["kind"] in ("go", "approve")

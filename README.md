@@ -304,15 +304,28 @@ Optional config fields, with their defaults:
   `~/.local/state/todo-sqlite-cli/mqtt-files/`), deliberately outside any
   repo checkout. Before this default, attachments landed in `mqtt-files/`
   next to the db, and one got swept into a local commit.
-- `checkin_file`, `deadman_drain_after_s` (3h), `deadman_pause_after_s`
-  (drain + 1h): coordinator only, see [Dead-man switch](#dead-man-switch).
+- `checkin_file`, `deadman_drain_after_s` (off; 10800 recommended),
+  `deadman_pause_after_s` (drain + 1h): coordinator only, see
+  [Dead-man switch](#dead-man-switch).
 - `coordinator_offline_drain_after_s` (2h): worker only, see the same
   section.
 - `message_max_chars` (4096), `max_file_bytes` (1 MB),
   `request_timeout_s` (30).
 
-Older servers reject config keys they don't know. Upgrade a node's server
+This version warns on stderr about config keys it doesn't know and
+ignores them. It rejects a malformed number such as `"3h"` at startup.
+Older servers crash on any key they don't know, so upgrade a node's server
 before adding a new key such as `stale_after_heartbeats` to its config.
+
+**Rollout order:**
+1. Update the broker ACL (below).
+2. Upgrade the servers, coordinator or workers in any order.
+3. Add any new config keys.
+
+A new worker on the old ACL can't read its own presence leaf, so it can't
+check its link. Every reply then reports `link.error` ("subscription to …
+denied by broker ACL"), and an empty drain raises that error rather than
+a stale-link loop.
 
 Twenty more MCP tools exist for MQTT sync, but each is only registered on
 a node whose configured mode it's valid for — a standalone deployment (no
@@ -456,14 +469,19 @@ it reads its own heartbeat back to check that its link is live.
     an explicit `offline` on a clean exit. It reads `online` only while
     heartbeats keep arriving. A coordinator too old to publish presence
     shows as `unknown`.
-  - `link`: `{connected, last_rx_at, age_s, stale, stale_since}`, this
-    node's own broker link. Each side reads its own retained presence back,
-    so any inbound traffic proves the link is alive. The link is stale
-    after a disconnect, or after `stale_after_heartbeats` intervals of
-    silence.
-- On a stale link, an empty `check_messages`/`check_assignments` drain (on
-  either side) and `latest_directive` are **errors** rather than empty
-  results. The error says: "do not act on silence; report_state and retry
+  - `link`: `{connected, last_rx_at, age_s, stale, stale_since,
+    denied_subscriptions, error}`, this node's own broker link.
+    - Any inbound traffic proves the link is alive: a message, the broker's
+      ack of our heartbeat, or the heartbeat echoed back on our own presence
+      topic.
+    - The link is stale after a disconnect, or after
+      `stale_after_heartbeats` intervals of silence.
+    - `error` names subscriptions the broker ACL denies. mosquitto accepts
+      a denied subscription and then delivers nothing, so the tell is
+      heartbeats the broker acks that never come back.
+- On a stale link, or with `link.error` set, an empty
+  `check_messages`/`check_assignments` drain (on either side) and
+  `latest_directive` are **errors** rather than empty results. The error says: "do not act on silence; report_state and retry
   next poll". A non-empty drain still returns its items, plus
   `link_stale_since`. This came out of a coordinator link that went silent
   for ~70 minutes while local MCP calls kept succeeding.
@@ -477,6 +495,8 @@ If the operator walks away without winding the fleet down, the fleet
 drains and stops on its own. This needs no model turn: an idle agent
 doesn't run, but its server process does.
 
+- **Off by default.** It's enabled only when `deadman_drain_after_s` is set
+  (> 0) in the coordinator's config. 10800 (3h) is the recommended value.
 - **Coordinator:**
   - The coordinator's server process checks, on its heartbeat thread, the
     mtime of `checkin_file` (default
@@ -491,7 +511,13 @@ doesn't run, but its server process does.
     so a hand-set `paused` stays paused.
   - It never resumes on its own. A check-in only resets the timer, and
     going back to `active` takes an explicit `set_fleet_state`.
-  - `0` or `null` disables a stage.
+  - It does nothing while its link is stale, or until it has learned the
+    retained fleet state from the broker. That stops a stale local copy
+    from overwriting a hand-set pause on reconnect.
+  - It logs each state it sets to stderr. It also logs a fleet-state
+    publish still unsent when the process exits.
+  - An explicit `0` or `null` for `deadman_pause_after_s` disables just the
+    pause stage.
   - `get_fleet_state` and `list_workers` show `deadman: {enabled,
     checkin_file, last_checkin, timer_from, drains_at, pauses_at}`.
 - **Check-ins:** a Claude Code `UserPromptSubmit` hook on the coordinator
@@ -502,9 +528,11 @@ doesn't run, but its server process does.
     "command": "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/todo-sqlite-cli\"; mkdir -p \"$d\" && touch \"$d/checkin\""}]}]}}
   ```
 
-  Make sure only a real operator prompt fires it. A prompt the session
-  gives itself (a scheduled wakeup or loop tick, a cross-session message)
-  would keep resetting the timer and defeat the switch. The `checkin(note)`
+  **This unfiltered hook is not enough.** `UserPromptSubmit` also fires for
+  prompts injected into the session, such as scheduled wakeups, loop ticks,
+  cross-session messages and task notifications. Each of those would reset
+  the timer and defeat the switch. The hook has to filter on its stdin
+  JSON and touch the file only for a prompt the operator really typed. The `checkin(note)`
   coordinator tool touches the file too, as a manual fallback. Agents
   should call it only when the operator asks.
 - **Worker fallback:** a worker whose coordinator is gone for
@@ -512,6 +540,9 @@ doesn't run, but its server process does.
   `fleet_state: {state: "draining", source: "coordinator-offline", since,
   retained: {…}}`. "Gone" means a Last-Will/clean `offline`, or heartbeats
   that stopped, which includes the worker's own link being down.
+  - The clock never starts before the worker's own process start, so a
+    worker started long after the coordinator left still gets the full
+    grace period.
   - At twice the threshold it reports `paused`.
   - It's purely local: nothing is published, and it lapses as soon as the
     coordinator is back.
@@ -531,8 +562,11 @@ doesn't run, but its server process does.
   `approve`/`hold`/`go` for the same task has arrived, on either channel.
   A `hold` therefore supersedes an earlier `go`. An `info` never supersedes
   anything.
-- `latest_directive(task_id)` (worker) returns the effective directive,
-  plus:
+- `latest_directive(task_id)` (worker) resolves `task_id` through the
+  local replica and matches on uuid only, so a display id that
+  `renumber_task` moved to another task never inherits the old task's
+  directive. An id the replica can't resolve is an error. It returns the
+  effective directive, plus:
   - `ok_to_act`: true only for `go`/`approve`, with the fleet not paused
     and a fresh link.
   - `draining`: finish the current task only, and don't pick up a new
