@@ -28,6 +28,10 @@ On top of that plumbing sit a few fleet-control features:
   marks older approve/hold/go directives for the same task as superseded.
 - receipts: a worker acks each message/assignment when its service
   receives it ("delivered") and when its agent drains it ("read").
+- a dead-man switch: the coordinator process itself (no model turn needed)
+  drains, then pauses, the fleet once the operator's check-in file goes
+  stale; a worker whose coordinator has been gone long enough derives a
+  local draining/paused on its own.
 
 Only imported when TODO_SQLITE_CLI_MQTT_CONFIG is set, so a standalone
 deployment never needs the `paho-mqtt` optional dependency installed.
@@ -101,6 +105,22 @@ DIRECTIVE_KINDS = ("approve", "hold", "go", "info")
 # one. "info" is sequenced too, but an FYI must never cancel a go or a hold.
 _ACTIONABLE_KINDS = ("approve", "hold", "go")
 _SENT_LOG_CAP = 1000
+_STATE_RANK = {"active": 0, "draining": 1, "paused": 2}
+_OMITTED = "omitted"  # config default sentinel: omitted != explicit null/0
+
+# Read literally by agents (the worker playbook points at this field).
+FLEET_INSTRUCTIONS = {
+    "draining": (
+        "Fleet is draining: finish your current task (or checkpoint it if it can't finish soon) "
+        "and do not pick up new work. Then push your work branch, append a state note to the task, "
+        "send the coordinator a final message, report_state('offline'), and stop polling."
+    ),
+    "paused": (
+        "Fleet is paused: stop now. Checkpoint your current step, push your work branch, "
+        "append a state note to the task, send the coordinator a final message, "
+        "report_state('offline'), and stop polling (schedule no more wakeups)."
+    ),
+}
 
 
 @dataclass
@@ -123,6 +143,14 @@ class Config:
     message_max_chars: int = 4096
     max_file_bytes: int = 1_048_576
     files_dir: str | None = None
+    # Dead-man switch (coordinator). Omitted -> the default; 0 or null ->
+    # that stage is disabled. Pause defaults to drain + 1h.
+    checkin_file: str | None = None
+    deadman_drain_after_s: float | None | str = _OMITTED
+    deadman_pause_after_s: float | None | str = _OMITTED
+    # Worker fallback when the coordinator itself is gone. Same convention;
+    # paused follows at twice this.
+    coordinator_offline_drain_after_s: float | None | str = _OMITTED
 
     @property
     def password(self) -> str | None:
@@ -131,6 +159,29 @@ class Config:
     @property
     def stale_after_s(self) -> float:
         return self.heartbeat_interval_s * self.stale_after_heartbeats
+
+    @property
+    def deadman_drain_s(self) -> float | None:
+        v = 3 * 3600.0 if self.deadman_drain_after_s == _OMITTED else self.deadman_drain_after_s
+        return v or None
+
+    @property
+    def deadman_pause_s(self) -> float | None:
+        if self.deadman_pause_after_s == _OMITTED:
+            drain = self.deadman_drain_s
+            return drain + 3600.0 if drain else None
+        return self.deadman_pause_after_s or None
+
+    @property
+    def coordinator_offline_drain_s(self) -> float | None:
+        v = 2 * 3600.0 if self.coordinator_offline_drain_after_s == _OMITTED else self.coordinator_offline_drain_after_s
+        return v or None
+
+    @property
+    def checkin_path(self) -> Path:
+        if self.checkin_file:
+            return Path(self.checkin_file).expanduser()
+        return _state_home() / "todo-sqlite-cli" / "checkin"
 
     # Per-worker topics: pass a worker_id to get that worker's own subtopic
     # (what it publishes to, or subscribes to for itself); pass none (or
@@ -187,8 +238,11 @@ class Config:
         attachments where a `git add -A` sweeps them into a commit."""
         if self.files_dir:
             return Path(self.files_dir)
-        state_home = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-        return Path(state_home) / "todo-sqlite-cli" / "mqtt-files"
+        return _state_home() / "todo-sqlite-cli" / "mqtt-files"
+
+
+def _state_home() -> Path:
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
 
 
 def load_config() -> Config | None:
@@ -300,8 +354,11 @@ def _fleet_state_view(state: dict | None) -> dict:
     broker means `active` (so a fleet that never uses the switch, or a
     coordinator too old to publish it, behaves exactly as before)."""
     if state is None:
-        return {"state": "active", "note": None, "set_at": None, "set_by": None, "source": "default"}
-    return {**state, "source": "retained"}
+        view = {"state": "active", "note": None, "set_at": None, "set_by": None, "source": "default"}
+    else:
+        view = {**state, "source": "retained"}
+    view["instruction"] = FLEET_INSTRUCTIONS.get(view["state"])
+    return view
 
 
 _WORKER_ADVICE = "Do not act on silence; report_state and retry next poll."
@@ -451,6 +508,13 @@ class _Node:
     def _heartbeat_loop(self) -> None:
         while not self._heartbeat_stop.wait(self.config.heartbeat_interval_s):
             self._publish_presence(self._client, "online")
+            try:
+                self._on_heartbeat()
+            except Exception:
+                pass  # never let a hook kill the heartbeat (the node would look offline)
+
+    def _on_heartbeat(self) -> None:
+        pass
 
     def _shutdown(self) -> None:
         """On a normal exit (e.g. the MCP client closing stdin), publish an
@@ -493,6 +557,7 @@ class CoordinatorService(_Node):
         self._sent: dict[str, dict] = _load_json(self._sent_path, {})
         self._presence: dict[str, dict] = {}
         self._fleet_state: dict | None = None
+        self._started_at = time.time()
         self._link = LinkMonitor(config.stale_after_s)
         will_payload = json.dumps({"client_id": config.client_id, "status": "offline", "ts": None})
         self._client = _make_client(
@@ -805,25 +870,80 @@ class CoordinatorService(_Node):
 
     # -- fleet state --------------------------------------------------------
 
-    def set_fleet_state(self, state: str, note: str | None = None) -> str:
-        if state not in FLEET_STATES:
-            raise RuntimeError(f"unknown fleet state '{state}' (expected {'|'.join(FLEET_STATES)})")
-        payload = {
-            "state": state,
-            "note": note,
-            "set_at": time.time(),
-            "set_by": self.config.client_id,
-        }
+    def _publish_fleet_state(self, state: str, note: str | None, set_by: str) -> dict:
+        payload = {"state": state, "note": note, "set_at": time.time(), "set_by": set_by}
         self._client.publish(self.config.fleet_state_topic, json.dumps(payload), qos=1, retain=True)
         with self._lock:
             self._fleet_state = payload
-        reply = {**_fleet_state_view(payload), "link": self._link.status()}
+        return payload
+
+    def set_fleet_state(self, state: str, note: str | None = None) -> str:
+        if state not in FLEET_STATES:
+            raise RuntimeError(f"unknown fleet state '{state}' (expected {'|'.join(FLEET_STATES)})")
+        payload = self._publish_fleet_state(state, note, self.config.client_id)
+        reply = {**_fleet_state_view(payload), "deadman": self._deadman_view(), "link": self._link.status()}
         if reply["link"]["stale"]:
             reply["warning"] = "MQTT link is stale: workers may not see this until it recovers."
         return json.dumps(reply)
 
     def get_fleet_state(self) -> str:
-        return json.dumps({**_fleet_state_view(self._fleet_state), "link": self._link.status()})
+        return json.dumps(
+            {**_fleet_state_view(self._fleet_state), "deadman": self._deadman_view(), "link": self._link.status()}
+        )
+
+    # -- dead-man switch ----------------------------------------------------
+
+    def _last_checkin(self) -> float | None:
+        try:
+            return self.config.checkin_path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _deadman_view(self) -> dict:
+        """When the dead-man switch will act. The timer runs from the later
+        of the last check-in and this process's start, so a fresh start
+        (or a missing check-in file) never drains the fleet instantly."""
+        drain_s, pause_s = self.config.deadman_drain_s, self.config.deadman_pause_s
+        last = self._last_checkin()
+        since = max(last or 0.0, self._started_at)
+        return {
+            "enabled": bool(drain_s or pause_s),
+            "checkin_file": str(self.config.checkin_path),
+            "last_checkin": last,
+            "timer_from": since,
+            "drains_at": since + drain_s if drain_s else None,
+            "pauses_at": since + pause_s if pause_s else None,
+        }
+
+    def _on_heartbeat(self) -> None:
+        self._deadman_tick()
+
+    def _deadman_tick(self) -> None:
+        """Runs on the heartbeat thread, so it works while the coordinator's
+        agent is idle. Only ever moves the fleet toward draining/paused:
+        never relaxes a state (a hand-set pause stays paused), and never
+        resumes on a check-in, which only resets the timer."""
+        view = self._deadman_view()
+        now = time.time()
+        if view["pauses_at"] is not None and now >= view["pauses_at"]:
+            target = "paused"
+        elif view["drains_at"] is not None and now >= view["drains_at"]:
+            target = "draining"
+        else:
+            return
+        with self._lock:
+            current = _fleet_state_view(self._fleet_state)["state"]
+        if _STATE_RANK[target] <= _STATE_RANK[current]:
+            return
+        checked_in = view["last_checkin"] is not None and view["last_checkin"] >= self._started_at
+        since = _iso(view["timer_from"]) if checked_in else f"coordinator start at {_iso(view['timer_from'])}"
+        self._publish_fleet_state(target, f"dead-man: no check-in since {since}", "deadman")
+
+    def checkin(self, note: str | None = None) -> str:
+        path = self.config.checkin_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"ts": time.time(), "note": note, "via": "checkin tool"}) + "\n")
+        return json.dumps({"deadman": self._deadman_view(), "fleet_state": _fleet_state_view(self._fleet_state)})
 
     # -- broadcasts / presence ----------------------------------------------
 
@@ -862,7 +982,7 @@ class CoordinatorService(_Node):
                 {"worker_id": w, **info, "age_s": round(now - info["ts"], 1)}
                 for w, info in self._presence.items()
             ]
-        return json.dumps({"workers": workers, "link": self._link.status()})
+        return json.dumps({"workers": workers, "deadman": self._deadman_view(), "link": self._link.status()})
 
 
 class WorkerService(_Node):
@@ -1034,10 +1154,16 @@ class WorkerService(_Node):
                     "heartbeat_interval_s": payload.get("heartbeat_interval_s"),
                 }
             else:
+                # When it went offline: now, for a live notice. A retained
+                # one replayed on subscribe only has its payload ts (none at
+                # all for a Last-Will), so fall back to now: that can only
+                # delay the offline fallback, never trigger it early.
+                offline_since = (payload.get("ts") if retained else None) or time.time()
                 self._coordinator = {
                     "status": payload.get("status") or "offline",
                     "last_seen": prev.get("last_seen") or payload.get("ts"),
                     "heartbeat_interval_s": prev.get("heartbeat_interval_s"),
+                    "offline_since": prev.get("offline_since") if prev.get("status") == "offline" else offline_since,
                 }
 
     def _coordinator_view(self) -> dict:
@@ -1059,11 +1185,55 @@ class WorkerService(_Node):
                 status = "unknown"
         return {"status": status, "last_seen": last_seen, "age_s": age}
 
-    def _context(self) -> dict:
+    def _coordinator_gone_since(self) -> float | None:
+        """Since when the coordinator has been gone: an "offline" notice,
+        or an "online" whose heartbeats stopped (which also covers this
+        worker's own link being down). None if it's around, or if no
+        presence was ever seen: an old coordinator that never publishes
+        presence must not trip the offline fallback."""
         with self._lock:
-            fleet_state = _fleet_state_view(self._fleet_state)
+            c = dict(self._coordinator) if self._coordinator else None
+        if c is None:
+            return None
+        if c["status"] != "online":
+            return c.get("offline_since") or c.get("last_seen")
+        last_seen = c.get("last_seen")
+        interval = c.get("heartbeat_interval_s") or self.config.heartbeat_interval_s
+        if last_seen is not None and time.time() - last_seen > interval * self.config.stale_after_heartbeats:
+            return last_seen
+        return None
+
+    def _effective_fleet_state(self) -> dict:
+        """The retained fleet state, unless the coordinator has been gone
+        past coordinator_offline_drain_after_s: then a locally derived
+        draining (paused at twice that). Nothing is published, and the
+        derived state lapses as soon as the coordinator is back."""
+        with self._lock:
+            retained = _fleet_state_view(self._fleet_state)
+        drain_s = self.config.coordinator_offline_drain_s
+        gone_since = self._coordinator_gone_since()
+        if not drain_s or gone_since is None:
+            return retained
+        gone_for = time.time() - gone_since
+        if gone_for < drain_s:
+            return retained
+        derived = "paused" if gone_for >= 2 * drain_s else "draining"
+        if _STATE_RANK[derived] <= _STATE_RANK[retained["state"]]:
+            return retained
         return {
-            "fleet_state": fleet_state,
+            "state": derived,
+            "note": f"coordinator gone since {_iso(gone_since)}",
+            "set_at": None,
+            "set_by": None,
+            "source": "coordinator-offline",
+            "since": gone_since,
+            "retained": {k: v for k, v in retained.items() if k != "instruction"},
+            "instruction": FLEET_INSTRUCTIONS[derived],
+        }
+
+    def _context(self) -> dict:
+        return {
+            "fleet_state": self._effective_fleet_state(),
             "coordinator": self._coordinator_view(),
             "link": self._link.status(),
         }

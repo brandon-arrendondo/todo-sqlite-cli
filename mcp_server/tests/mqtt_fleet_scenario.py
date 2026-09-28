@@ -105,7 +105,7 @@ class Broker:
         self.port = free_port()
         self.log = self.dir / "mosquitto.log"
         passwd = self.dir / "passwd"
-        for user in ("coord", "w1", "w2", "w3", "w9"):
+        for user in ("coord", "w1", "w2", "w3", "w4", "w9"):
             flag = ["-c"] if not passwd.exists() else []
             subprocess.run([prereqs["passwd"], "-b", *flag, str(passwd), user, PASSWORD], check=True)
         os.chmod(passwd, 0o600)
@@ -297,10 +297,17 @@ class Scenario:
         self.nodes.append(n)
         return n
 
-    async def coordinator(self, source_dir=SERVER_DIR, new_fields=True) -> Node:
+    async def coordinator(self, source_dir=SERVER_DIR, new_fields=True, **extra) -> Node:
         return await self.node(
-            "coord", self.config("coordinator", "coord", new_fields=new_fields, db_path=str(self.coord_db)), source_dir
+            "coord",
+            self.config("coordinator", "coord", new_fields=new_fields, db_path=str(self.coord_db), **extra),
+            source_dir,
         )
+
+    async def restart_coordinator(self, coord, **extra) -> Node:
+        await coord.stop()
+        self.nodes.remove(coord)
+        return await self.coordinator(**extra)
 
     async def worker(self, wid, source_dir=SERVER_DIR, new_fields=True, **extra) -> Node:
         return await self.node(
@@ -340,8 +347,10 @@ class Scenario:
             await self.acl(coord)
             coord = await self.coordinator_offline(coord, w1, w2)
             await self.broker_outage(coord, w1)
+            coord = await self.deadman(coord, w1)
+            coord, w4 = await self.offline_fallback(coord, w1, t1)
             if self.compat_ref:
-                await self.compat(coord, w1, t1)
+                await self.compat(coord, w1, t1, w4)
             denied = [l for l in self.broker.denied_lines() if " w9 " not in l and "(w9)" not in l and "w9," not in l]
             self.check("broker: no ACL denials for real nodes", not denied, "; ".join(denied[:3]))
         finally:
@@ -595,7 +604,82 @@ class Scenario:
         cl = await self.until(lambda: self._when(coord.call("list_workers"), lambda r: not r["link"]["stale"]), timeout=10)
         self.check("coordinator link recovers", bool(cl))
 
-    async def compat(self, coord, w1, t1):
+    async def deadman(self, coord, w1):
+        print("\n== dead-man switch")
+        checkin = self.workdir / "checkin"
+        coord = await self.restart_coordinator(coord, checkin_file=str(checkin), deadman_drain_after_s=4, deadman_pause_after_s=8)
+        g = await coord.call("get_fleet_state")
+        dm = g["deadman"]
+        self.check("fresh start with no check-in file: no instant drain, timer runs from process start",
+                   g["state"] == "active" and dm["last_checkin"] is None and dm["drains_at"] - dm["timer_from"] == 4
+                   and dm["pauses_at"] - dm["timer_from"] == 8, json.dumps(dm))
+        g = await self.until(lambda: self._when(coord.call("get_fleet_state"), lambda r: r["state"] == "draining"), timeout=10)
+        self.check("no check-in past drain_after: dead-man drains", bool(g) and g["set_by"] == "deadman"
+                   and g["note"].startswith("dead-man: no check-in since coordinator start at "),
+                   json.dumps(g and {k: g[k] for k in ("state", "note", "set_by")}))
+        fs = await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["fleet_state"]["state"] == "draining"))
+        self.check("worker poll carries draining + instruction", bool(fs) and "finish your current task" in (fs["fleet_state"]["instruction"] or ""),
+                   fs and fs["fleet_state"]["instruction"])
+        c = await coord.call("checkin", note="scenario")
+        dm = c["deadman"]
+        self.check("checkin tool resets the timer but doesn't resume", c["fleet_state"]["state"] == "draining"
+                   and dm["last_checkin"] and abs(dm["pauses_at"] - dm["last_checkin"] - 8) < 0.5, json.dumps(dm))
+        await asyncio.sleep(5)
+        g = await coord.call("get_fleet_state")
+        self.check("check-in pushed the pause out (still draining 5s later)", g["state"] == "draining", g["state"])
+        g = await self.until(lambda: self._when(coord.call("get_fleet_state"), lambda r: r["state"] == "paused"), timeout=8)
+        self.check("no check-in past pause_after: dead-man pauses", bool(g) and g["set_by"] == "deadman", json.dumps(g and g["note"]))
+        fs = await self.until(lambda: self._when(w1.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "paused"))
+        self.check("worker sees paused + instruction", bool(fs) and "stop now" in (fs["fleet_state"]["instruction"] or ""))
+        checkin.touch()  # what the UserPromptSubmit hook does
+        await asyncio.sleep(2.5)
+        g = await coord.call("get_fleet_state")
+        self.check("a hook-style check-in (touch) never auto-resumes", g["state"] == "paused" and g["deadman"]["last_checkin"] > g["set_at"])
+        g = await coord.call("set_fleet_state", state="active", note="back")
+        self.check("explicit set_fleet_state resumes", g["state"] == "active")
+        await coord.call("set_fleet_state", state="paused", note="by hand")
+        checkin.touch()
+        await asyncio.sleep(5.5)
+        g = await coord.call("get_fleet_state")
+        self.check("dead-man never relaxes a hand-set pause", g["state"] == "paused" and g["set_by"] == "coord", json.dumps({k: g[k] for k in ("state", "set_by")}))
+        coord = await self.restart_coordinator(coord, deadman_drain_after_s=0)
+        await coord.call("set_fleet_state", state="active")
+        g = await coord.call("get_fleet_state")
+        self.check("deadman_drain_after_s=0 disables both stages", g["deadman"]["enabled"] is False and g["deadman"]["pauses_at"] is None)
+        return coord
+
+    async def offline_fallback(self, coord, w1, t1):
+        print("\n== worker fallback: coordinator gone")
+        w4 = await self.worker("w4", coordinator_offline_drain_after_s=3)
+        await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["coordinator"]["status"] == "online"))
+        await coord.call("assign_task", worker_id="w4", body="go", task_id=t1["id"])
+        await self.until(lambda: self._when(w4.call("check_assignments"), lambda r: r["assignments"]))
+        ld = await w4.call("latest_directive", task_id=t1["id"])
+        self.check("baseline: go, ok_to_act", ld["ok_to_act"] is True)
+        await coord.kill()
+        self.nodes.remove(coord)
+        fs = await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "draining"), timeout=10)
+        self.check("coordinator killed: worker derives draining past the threshold",
+                   bool(fs) and fs["fleet_state"]["source"] == "coordinator-offline" and fs["fleet_state"]["since"]
+                   and fs["fleet_state"]["retained"]["state"] == "active" and fs["fleet_state"]["instruction"],
+                   json.dumps(fs and {k: fs["fleet_state"][k] for k in ("state", "source", "since", "note")}))
+        ld = await w4.call("latest_directive", task_id=t1["id"])
+        self.check("derived draining: ok_to_act true, draining true", ld["ok_to_act"] is True and ld["draining"] is True)
+        fs = await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "paused"), timeout=10)
+        self.check("past 2x the threshold: derived paused", bool(fs) and fs["fleet_state"]["source"] == "coordinator-offline")
+        ld = await w4.call("latest_directive", task_id=t1["id"])
+        self.check("derived paused: ok_to_act false", ld["ok_to_act"] is False)
+        fs1 = await w1.call("fleet_state")
+        self.check("worker with the default 2h threshold is unaffected", fs1["fleet_state"]["state"] == "active")
+        coord = await self.coordinator(deadman_drain_after_s=0)
+        g = await coord.call("get_fleet_state")
+        self.check("retained fleet/state untouched by the worker fallback", g["state"] == "active" and g["source"] == "retained")
+        fs = await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "active"
+                                                 and r["fleet_state"]["source"] == "retained"))
+        self.check("derived state lapses once the coordinator is back", bool(fs))
+        return coord, w4
+
+    async def compat(self, coord, w1, t1, w4):
         print(f"\n== mixed versions vs {self.compat_ref}")
         old = self.workdir / "old-server"
         old.mkdir()
@@ -648,6 +732,11 @@ class Scenario:
         await old_coord.call("approve_request", request_id=pend["pending"][0]["request_id"])
         res = await self.until(lambda: self._when(w1.call("check_request", request_id=sub["request_id"]), lambda r: r["status"] == "approved"))
         self.check("new worker write path works against old coordinator", bool(res))
+        await asyncio.sleep(7)
+        fs = await w4.call("fleet_state")
+        self.check("old coordinator (never published presence): no offline fallback past 2x threshold",
+                   fs["fleet_state"]["state"] == "active" and fs["fleet_state"]["source"] == "retained"
+                   and fs["coordinator"]["status"] == "unknown", json.dumps({"fleet_state": fs["fleet_state"]["state"], "coordinator": fs["coordinator"]}))
 
 
 def main() -> int:

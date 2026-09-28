@@ -571,10 +571,12 @@ def fleet_state() -> str:
     three keys every worker MQTT tool reply already carries:
 
     fleet_state: {state: active|draining|paused, note, set_at, set_by,
-        source}. active: work normally. draining: finish the current task,
-        pick up nothing new. paused: checkpoint, report_state, and stop
-        scheduling wakeups. source "default" means nothing is retained on
-        the broker, which counts as active.
+        source, instruction}. active: work normally. draining/paused:
+        follow `instruction` literally. source "default" means nothing is
+        retained on the broker, which counts as active; source
+        "coordinator-offline" means the coordinator has been gone long
+        enough that this worker derived draining/paused on its own (with
+        `since`, and the real retained state under `retained`).
     coordinator: {status: online|offline|unknown, last_seen, age_s}.
     link: {connected, last_rx_at, age_s, stale, stale_since} — this node's
         own broker link.
@@ -720,7 +722,7 @@ def list_workers() -> str:
     of its heartbeat interval.
 
     Returns {"workers": [{worker_id, status, work_state, ts, age_s}, ...],
-    link}. work_state is whatever a worker last passed to report_state()
+    deadman, link}. work_state is whatever a worker last passed to report_state()
     (null if it never has); age_s is seconds since its last presence
     update; link is this coordinator's own broker link health.
     """
@@ -760,7 +762,11 @@ def set_fleet_state(state: str, note: str | None = None) -> str:
         it too: no new go/approve directives or subagent launches.
     note: optional free-form reason, shown to workers alongside it.
 
-    Returns {state, note, set_at, set_by, source, link, warning?}.
+    Going back to active always takes an explicit set_fleet_state: the
+    dead-man switch never resumes the fleet by itself.
+
+    Returns {state, note, set_at, set_by, source, instruction, deadman,
+    link, warning?}.
     """
     if _mqtt is None or _mqtt_config.mode != "coordinator":
         raise RuntimeError("set_fleet_state requires MQTT coordinator mode")
@@ -768,10 +774,32 @@ def set_fleet_state(state: str, note: str | None = None) -> str:
 
 
 @_mqtt_tool("coordinator")
+def checkin(note: str | None = None) -> str:
+    """Coordinator only. Record an operator check-in, resetting the
+    dead-man timer. It does NOT resume a drained or paused fleet (use
+    set_fleet_state for that). Call it only when the operator explicitly
+    asks you to: calling it on your own defeats the dead-man switch.
+    Normally the operator's prompt hook touches the file instead.
+
+    Returns {deadman, fleet_state}.
+    """
+    if _mqtt is None or _mqtt_config.mode != "coordinator":
+        raise RuntimeError("checkin requires MQTT coordinator mode")
+    return _mqtt.checkin(note)
+
+
+@_mqtt_tool("coordinator")
 def get_fleet_state() -> str:
     """Coordinator only. The current fleet state as {state, note, set_at,
-    set_by, source, link}. source "default" means nothing is retained on
-    the broker, which counts as active.
+    set_by, source, instruction, deadman, link}. source "default" means
+    nothing is retained on the broker, which counts as active. set_by
+    "deadman" means the dead-man switch set it.
+
+    deadman: {enabled, checkin_file, last_checkin, timer_from, drains_at,
+    pauses_at}. The coordinator's server process itself drains, then
+    pauses, the fleet when no check-in (the checkin file's mtime, touched
+    by the operator's prompt hook) has happened for the configured time.
+    It only ever moves toward draining/paused, and never resumes.
     """
     if _mqtt is None or _mqtt_config.mode != "coordinator":
         raise RuntimeError("get_fleet_state requires MQTT coordinator mode")

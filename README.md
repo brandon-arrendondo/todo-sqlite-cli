@@ -304,20 +304,24 @@ Optional config fields, with their defaults:
   `~/.local/state/todo-sqlite-cli/mqtt-files/`), deliberately outside any
   repo checkout. Before this default, attachments landed in `mqtt-files/`
   next to the db, and one got swept into a local commit.
+- `checkin_file`, `deadman_drain_after_s` (3h), `deadman_pause_after_s`
+  (drain + 1h): coordinator only, see [Dead-man switch](#dead-man-switch).
+- `coordinator_offline_drain_after_s` (2h): worker only, see the same
+  section.
 - `message_max_chars` (4096), `max_file_bytes` (1 MB),
   `request_timeout_s` (30).
 
 Older servers reject config keys they don't know. Upgrade a node's server
 before adding a new key such as `stale_after_heartbeats` to its config.
 
-Nineteen more MCP tools exist for MQTT sync, but each is only registered on
+Twenty more MCP tools exist for MQTT sync, but each is only registered on
 a node whose configured mode it's valid for — a standalone deployment (no
 MQTT config) sees none of them, a coordinator sees only the coordinator (and
 shared) ones, a worker only the worker (and shared) ones. This keeps a
 node's tool list free of entries that would just error if called:
 `list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
 `assign_task`, `delete_broadcast`, `list_sent`, `set_fleet_state`,
-`get_fleet_state` (coordinator); `check_request`, `sync_state`,
+`get_fleet_state`, `checkin` (coordinator); `check_request`, `sync_state`,
 `check_assignments`, `report_state`, `fleet_state`, `latest_directive`
 (worker); `send_message`,
 `check_messages`, `broadcast`\*, `check_broadcasts`\* (\*coordinator-only
@@ -441,7 +445,11 @@ it reads its own heartbeat back to check that its link is live.
   `latest_directive`, and the pending reply from every write tool) carries
   three extra keys, so an agent sees them on its next poll without a
   separate call. `fleet_state()` returns just those keys:
-  - `fleet_state`: `{state, note, set_at, set_by, source}`.
+  - `fleet_state`: `{state, note, set_at, set_by, source, instruction}`.
+    For `draining`/`paused`, `instruction` spells out what to do (finish or
+    checkpoint, push the work branch, add a state note, send a final
+    message, `report_state('offline')`, stop polling). Agents follow it
+    literally.
   - `coordinator`: `{status: online|offline|unknown, last_seen, age_s}`.
     The coordinator heartbeats a retained `online` on `coordinator/presence`
     every `heartbeat_interval_s`, with a Last-Will `offline` for a crash and
@@ -462,6 +470,54 @@ it reads its own heartbeat back to check that its link is live.
 - If you roll the coordinator back to a version without presence, clear
   the retained `offline` it left behind (`mosquitto_pub -r -n -t
   P/coordinator/presence`), or workers keep reporting it offline.
+
+**Dead-man switch:**
+
+If the operator walks away without winding the fleet down, the fleet
+drains and stops on its own. This needs no model turn: an idle agent
+doesn't run, but its server process does.
+
+- **Coordinator:**
+  - The coordinator's server process checks, on its heartbeat thread, the
+    mtime of `checkin_file` (default
+    `$XDG_STATE_HOME/todo-sqlite-cli/checkin`). The timer runs from the
+    later of that mtime and the process start, so a fresh start (or a
+    missing file) never drains instantly.
+  - After `deadman_drain_after_s` without a check-in, it publishes
+    `fleet/state` `draining`, with `set_by: "deadman"` and a `dead-man: no
+    check-in since …` note. After `deadman_pause_after_s`, it publishes
+    `paused`.
+  - It only ever moves toward draining/paused. It never relaxes a state,
+    so a hand-set `paused` stays paused.
+  - It never resumes on its own. A check-in only resets the timer, and
+    going back to `active` takes an explicit `set_fleet_state`.
+  - `0` or `null` disables a stage.
+  - `get_fleet_state` and `list_workers` show `deadman: {enabled,
+    checkin_file, last_checkin, timer_from, drains_at, pauses_at}`.
+- **Check-ins:** a Claude Code `UserPromptSubmit` hook on the coordinator
+  host touches the file on each operator prompt, in `settings.json`:
+
+  ```json
+  {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command",
+    "command": "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/todo-sqlite-cli\"; mkdir -p \"$d\" && touch \"$d/checkin\""}]}]}}
+  ```
+
+  Make sure only a real operator prompt fires it. A prompt the session
+  gives itself (a scheduled wakeup or loop tick, a cross-session message)
+  would keep resetting the timer and defeat the switch. The `checkin(note)`
+  coordinator tool touches the file too, as a manual fallback. Agents
+  should call it only when the operator asks.
+- **Worker fallback:** a worker whose coordinator is gone for
+  `coordinator_offline_drain_after_s` reports an effective
+  `fleet_state: {state: "draining", source: "coordinator-offline", since,
+  retained: {…}}`. "Gone" means a Last-Will/clean `offline`, or heartbeats
+  that stopped, which includes the worker's own link being down.
+  - At twice the threshold it reports `paused`.
+  - It's purely local: nothing is published, and it lapses as soon as the
+    coordinator is back.
+  - `latest_directive`'s `ok_to_act` follows it.
+  - A coordinator that has never published presence (an older version)
+    never triggers it.
 
 **Directives and receipts:**
 
@@ -503,7 +559,8 @@ the task db schema.
 throwaway local mosquitto with the ACL above, then drives one coordinator
 and two workers over MCP stdio through every feature above: fleet state, a
 `kill -9`'d coordinator, a broker outage, go/hold supersede, receipts,
-attachments and ACL denials. It needs `mosquitto`, `mosquitto_passwd`,
+attachments, ACL denials, and the dead-man switch and worker fallback
+(with timers in seconds). It needs `mosquitto`, `mosquitto_passwd`,
 `mcp<2` and `paho-mqtt`, and skips cleanly (exit 0) if any is missing:
 
 ```
