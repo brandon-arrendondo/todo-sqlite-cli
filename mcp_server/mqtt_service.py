@@ -84,6 +84,7 @@ as unsequenced.
 import atexit
 import base64
 import dataclasses
+import hashlib
 import json
 import os
 import sqlite3
@@ -704,6 +705,8 @@ class CoordinatorService(_Node):
         self._sent_path = base.with_suffix(".mqtt-sent.json")
         self._sent: dict[str, dict] = _load_json(self._sent_path, {})
         self._presence: dict[str, dict] = {}
+        self._snapshot_lock = threading.Lock()
+        self._last_snapshot = None  # (sha256 hex, MQTTMessageInfo) of the last snapshot published
         self._fleet_state: dict | None = None
         # The dead-man switch must not act on a fleet state it hasn't
         # actually learned from the broker yet (see _deadman_tick).
@@ -910,12 +913,31 @@ class CoordinatorService(_Node):
             self.config.responses_topic(request["worker_id"]), json.dumps(payload), qos=1
         )
 
-    def publish_snapshot(self) -> None:
+    def publish_snapshot(self, dedupe: bool = False) -> bool:
+        """Publish the whole db as the retained state snapshot. Returns
+        whether it actually published.
+
+        dedupe=True (the pre-directive path) skips the publish when the
+        checkpointed bytes hash the same as the last snapshot published, and
+        that publish was accepted by paho (sent, or in flight on a live
+        connection), so a burst of directives with no db change in between
+        costs one snapshot rather than one each (~8 MB apiece on a large
+        db). The approve/write paths stay unconditional: a real change
+        always goes out, and they also refresh the hash dedupe compares to."""
         data = _checkpoint_and_read(self.config.db_path)
-        payload = json.dumps(
-            {"ts": time.time(), "snapshot_b64": base64.b64encode(data).decode()}
-        )
-        self._client.publish(self.config.state_topic, payload, qos=1, retain=True)
+        digest = hashlib.sha256(data).hexdigest()
+        with self._snapshot_lock:
+            last = self._last_snapshot
+            if dedupe and last is not None and last[0] == digest and (
+                last[1].is_published() or last[1].rc == mqtt.MQTT_ERR_SUCCESS
+            ):
+                return False
+            payload = json.dumps(
+                {"ts": time.time(), "snapshot_b64": base64.b64encode(data).decode()}
+            )
+            info = self._client.publish(self.config.state_topic, payload, qos=1, retain=True)
+            self._last_snapshot = (digest, info)
+            return True
 
     # -- directives ---------------------------------------------------------
 
@@ -942,12 +964,16 @@ class CoordinatorService(_Node):
             seq = max(self._seqs.get(key, 0) + 1, time.time_ns() // 1_000_000)
             self._seqs[key] = seq
             _save_json(self._seq_path, self._seqs)
+        kind = kind or default_kind
         # Publish a snapshot first (same connection, so it arrives first):
         # a task added straight through the CLI on this host would otherwise
         # be missing from the worker's replica, and latest_directive there
-        # couldn't resolve it.
-        self.publish_snapshot()
-        return {"task_id": task["id"], "task_uuid": task["uuid"], "seq": seq, "kind": kind or default_kind}
+        # couldn't resolve it. Not for an info, which never gates ok_to_act
+        # and so doesn't need the replica row; and deduped, so an unchanged
+        # db isn't re-sent per directive.
+        if kind != "info":
+            self.publish_snapshot(dedupe=True)
+        return {"task_id": task["id"], "task_uuid": task["uuid"], "seq": seq, "kind": kind}
 
     def _record_sent(self, message_id: str, worker_id: str, channel: str, directive: dict, sent_at: float) -> None:
         with self._lock:

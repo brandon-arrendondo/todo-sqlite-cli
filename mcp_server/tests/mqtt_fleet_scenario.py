@@ -515,6 +515,56 @@ class Scenario:
             self.check("display id unknown to the replica: error says how to recover",
                        "Ask the coordinator to re-send" in str(e), str(e)[:160])
 
+        # Pre-directive snapshots are deduped: count live (non-retained)
+        # publishes on the state topic.
+        seen = []
+        counter = self.raw_client("coord-count", "coord")
+        counter.on_message = lambda _c, _u, msg: seen.append(msg) if not msg.retain else None
+        counter.subscribe(f"{PREFIX}/state", qos=1)
+        await asyncio.sleep(1)
+
+        async def snapshots_during(action) -> int:
+            before = len(seen)
+            await action()
+            await asyncio.sleep(1)
+            return len(seen) - before
+
+        async def three_directives():
+            for kind in ("go", "hold", "go"):
+                await coord.call("assign_task", worker_id="w1", body=f"dedupe {kind}", task_id=t2["id"], kind=kind)
+
+        self.cli(self.coord_db, "edit", str(t2["id"]), "--append-details", "db change before the burst")
+        n = await snapshots_during(three_directives)
+        self.check("three directives, no db change between them: 1 snapshot", n == 1, f"{n} snapshots")
+
+        async def change_in_between():
+            self.cli(self.coord_db, "edit", str(t2["id"]), "--append-details", "db change before the burst")
+            await coord.call("assign_task", worker_id="w1", body="dedupe go", task_id=t2["id"], kind="go")
+            self.cli(self.coord_db, "edit", str(t2["id"]), "--append-details", "db change mid-burst")
+            await coord.call("assign_task", worker_id="w1", body="dedupe hold", task_id=t2["id"], kind="hold")
+            await coord.call("assign_task", worker_id="w1", body="dedupe go", task_id=t2["id"], kind="go")
+
+        n = await snapshots_during(change_in_between)
+        self.check("a db change between directives: 2 snapshots", n == 2, f"{n} snapshots")
+
+        async def infos():
+            self.cli(self.coord_db, "edit", str(t2["id"]), "--append-details", "db change before infos")
+            for _ in range(3):
+                await coord.call("send_message", worker_id="w1", body="fyi", task_id=t2["id"], kind="info")
+
+        n = await snapshots_during(infos)
+        self.check("task-tagged info messages send no snapshot", n == 0, f"{n} snapshots")
+
+        async def write_path():
+            await coord.call("edit_task", id=t2["id"], append_details="through the write tool")
+            await coord.call("edit_task", id=t2["id"], append_details="and again")
+
+        n = await snapshots_during(write_path)
+        self.check("write paths still always publish", n == 2, f"{n} snapshots")
+        counter.disconnect()
+        await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
+        await self.until(lambda: self._when(w1.call("check_messages"), lambda r: r["messages"]))
+
         # A display id that moved to another task (renumber_task) must not
         # hand that task the old one's go.
         a = await coord.call("add_task", title="renumber A")

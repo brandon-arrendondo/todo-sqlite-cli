@@ -569,8 +569,11 @@ doesn't run, but its server process does.
   directive. An exact uuid already in the directive ledger is answered
   from the ledger, without the replica. Any other id the replica can't
   resolve is an error; the fix is for the coordinator to re-send. The
-  coordinator publishes a db snapshot before every sequenced directive,
-  so a task added by raw CLI on its host still reaches the replica. It
+  coordinator publishes a db snapshot before every sequenced
+  approve/hold/go directive, so a task added by raw CLI on its host still
+  reaches the replica. That snapshot is skipped when the db hasn't changed
+  since the last one published (sha256 of the checkpointed file), and for
+  `info` entirely. Write and approve paths always publish. It
   returns the effective directive, plus:
   - `ok_to_act`: true only for `go`/`approve`, with the fleet not paused
     and a fresh link.
