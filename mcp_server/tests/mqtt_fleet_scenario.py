@@ -489,6 +489,32 @@ class Scenario:
         except ToolError as e:
             self.check("latest_directive for an unknown task is an error", "can't resolve task 12345" in str(e), str(e)[:120])
 
+        # A task added by raw CLI on the coordinator host, then assigned by
+        # id: the assignment must bring the replica along.
+        raw_task = json.loads(self.cli(self.coord_db, "add", "raw cli task", "--json"))["task"]
+        await coord.call("assign_task", worker_id="w1", body="go on the raw task", task_id=raw_task["id"])
+        await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
+        ld = await w1.call("latest_directive", task_id=raw_task["id"])
+        self.check("raw-CLI task assigned by id: latest_directive resolves it (snapshot sent first)",
+                   ld["task_uuid"] == raw_task["uuid"] and ld["effective"]["kind"] == "go", json.dumps(ld["effective"]))
+        # An exact uuid already in the ledger answers without the replica.
+        ghost = "00000000-0000-4000-8000-00000000abcd"
+        raw = self.raw_client("coord-raw", "coord")
+        raw.publish(f"{PREFIX}/assign/w1", json.dumps({"message_id": "ghost-go", "from": "coord", "task_id": 4242,
+                                                       "task_uuid": ghost, "seq": 1, "kind": "go", "body": "ghost",
+                                                       "ts": time.time()}), qos=1).wait_for_publish(5)
+        raw.disconnect()
+        await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
+        ld = await w1.call("latest_directive", task_id=ghost)
+        self.check("uuid in the ledger but not the replica: answered from the ledger",
+                   ld["task_uuid"] == ghost and ld["effective"]["kind"] == "go")
+        try:
+            await w1.call("latest_directive", task_id=4242)
+            self.check("display id unknown to the replica: error says how to recover", False)
+        except ToolError as e:
+            self.check("display id unknown to the replica: error says how to recover",
+                       "Ask the coordinator to re-send" in str(e), str(e)[:160])
+
         # A display id that moved to another task (renumber_task) must not
         # hand that task the old one's go.
         a = await coord.call("add_task", title="renumber A")
@@ -763,6 +789,12 @@ class Scenario:
                            capture_output=True, text=True, timeout=30)
         self.check("a malformed numeric value ('3h') is rejected loudly at load",
                    r.returncode != 0 and "'heartbeat_interval_s' must be a number" in r.stderr, r.stderr.strip().splitlines()[-1][:160])
+        cfg = self.config("coordinator", "coord", db_path=str(self.workdir / "neg.db"), deadman_drain_after_s=-10800)
+        path.write_text(json.dumps(cfg))
+        r = subprocess.run([sys.executable, str(SERVER_DIR / "server.py")], env=env, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=30)
+        self.check("a negative *_after_s (-10800) is rejected at load",
+                   r.returncode != 0 and "'deadman_drain_after_s' must be >= 0" in r.stderr, r.stderr.strip().splitlines()[-1][:160])
 
         old_broker = Broker(self.prereqs, self.workdir, name="broker-old-acl", acl=OLD_ACL)
         old_broker.start()

@@ -313,7 +313,8 @@ Optional config fields, with their defaults:
   `request_timeout_s` (30).
 
 This version warns on stderr about config keys it doesn't know and
-ignores them. It rejects a malformed number such as `"3h"` at startup.
+ignores them. It rejects a malformed number such as `"3h"`, or a negative
+`*_after_s`, at startup.
 Older servers crash on any key they don't know, so upgrade a node's server
 before adding a new key such as `stale_after_heartbeats` to its config.
 
@@ -565,8 +566,12 @@ doesn't run, but its server process does.
 - `latest_directive(task_id)` (worker) resolves `task_id` through the
   local replica and matches on uuid only, so a display id that
   `renumber_task` moved to another task never inherits the old task's
-  directive. An id the replica can't resolve is an error. It returns the
-  effective directive, plus:
+  directive. An exact uuid already in the directive ledger is answered
+  from the ledger, without the replica. Any other id the replica can't
+  resolve is an error; the fix is for the coordinator to re-send. The
+  coordinator publishes a db snapshot before every sequenced directive,
+  so a task added by raw CLI on its host still reaches the replica. It
+  returns the effective directive, plus:
   - `ok_to_act`: true only for `go`/`approve`, with the fleet not paused
     and a fresh link.
   - `draining`: finish the current task only, and don't pick up a new

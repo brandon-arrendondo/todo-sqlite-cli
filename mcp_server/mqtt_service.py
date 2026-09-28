@@ -293,6 +293,10 @@ def load_config() -> Config | None:
                 f"MQTT config {path}: '{key}' must be a number of "
                 f"{'seconds' if key.endswith('_s') else 'units'}{' or null' if nullable else ''}, got {v!r}"
             )
+        if key.endswith("_after_s") and v < 0:
+            # A typo'd sign would otherwise switch e.g. the dead-man on and
+            # have it act on its very first tick.
+            raise RuntimeError(f"MQTT config {path}: '{key}' must be >= 0 (0 or null disables it), got {v!r}")
     return Config(**raw)
 
 
@@ -625,9 +629,8 @@ class _Node:
     def _subscribed(self, topic: str, ok: bool) -> None:
         pass
 
-    def _track_presence(self, info, topic: str):
-        self._presence_mids[info.mid] = topic
-        return info
+    def _own_presence_topic(self) -> str:
+        raise NotImplementedError
 
     def _on_publish(self, _client, _userdata, mid, reason_code, _properties):
         topic = self._presence_mids.pop(mid, None)
@@ -642,7 +645,11 @@ class _Node:
 
     def _heartbeat_loop(self) -> None:
         while not self._heartbeat_stop.wait(self.config.heartbeat_interval_s):
-            self._publish_presence(self._client, "online")
+            info = self._publish_presence(self._client, "online")
+            # Only heartbeats feed the missing-echo (ACL) detector: they come
+            # at a steady rate, whereas a burst of report_state publishes
+            # could outrun their echoes and raise a transient ACL error.
+            self._presence_mids[info.mid] = self._own_presence_topic()
             try:
                 self._on_heartbeat()
             except Exception as e:
@@ -743,6 +750,13 @@ class CoordinatorService(_Node):
         if topic == self.config.fleet_state_topic and ok:
             self._fleet_sub_acked = True
 
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties):
+        # Re-learn the retained fleet state after every reconnect before the
+        # dead-man may act: it can have changed while we were away.
+        self._fleet_state_known = False
+        self._fleet_sub_acked = False
+        super()._on_disconnect(client, userdata, flags, reason_code, properties)
+
     def _publish_presence(self, client, status: str):
         payload = json.dumps(
             {
@@ -752,8 +766,10 @@ class CoordinatorService(_Node):
                 "heartbeat_interval_s": self.config.heartbeat_interval_s,
             }
         )
-        topic = self.config.coordinator_presence_topic
-        return self._track_presence(client.publish(topic, payload, qos=1, retain=True), topic)
+        return client.publish(self.config.coordinator_presence_topic, payload, qos=1, retain=True)
+
+    def _own_presence_topic(self) -> str:
+        return self.config.coordinator_presence_topic
 
     def _load_pending(self) -> dict:
         return _load_json(self._pending_path, {})
@@ -926,6 +942,11 @@ class CoordinatorService(_Node):
             seq = max(self._seqs.get(key, 0) + 1, time.time_ns() // 1_000_000)
             self._seqs[key] = seq
             _save_json(self._seq_path, self._seqs)
+        # Publish a snapshot first (same connection, so it arrives first):
+        # a task added straight through the CLI on this host would otherwise
+        # be missing from the worker's replica, and latest_directive there
+        # couldn't resolve it.
+        self.publish_snapshot()
         return {"task_id": task["id"], "task_uuid": task["uuid"], "seq": seq, "kind": kind or default_kind}
 
     def _record_sent(self, message_id: str, worker_id: str, channel: str, directive: dict, sent_at: float) -> None:
@@ -1255,8 +1276,10 @@ class WorkerService(_Node):
                 "ts": time.time(),
             }
         )
-        topic = self.config.presence_topic(self.config.client_id)
-        return self._track_presence(client.publish(topic, payload, qos=1, retain=True), topic)
+        return client.publish(self._own_presence_topic(), payload, qos=1, retain=True)
+
+    def _own_presence_topic(self) -> str:
+        return self.config.presence_topic(self.config.client_id)
 
     def _ensure_replica_initialized(self) -> None:
         # So reads don't hard-fail with "not initialized" before the first
@@ -1500,13 +1523,22 @@ class WorkerService(_Node):
         # Resolve through the replica and match on uuid only: a display id
         # stored when the directive arrived can have moved to another task
         # since (renumber_task), and must never hand that task's go to this one.
-        try:
-            task = json.loads(self.run("show", str(task_id), "--format", "json"))
-        except RuntimeError as e:
-            raise RuntimeError(
-                f"can't resolve task {task_id} on this worker's replica ({e}); pass the full uuid, "
-                "or check sync_state if the task is new. Don't act until it resolves."
-            ) from None
+        # An exact uuid the ledger already holds needs no replica lookup (and
+        # so still works if the replica lags behind the directive).
+        key = str(task_id)
+        with self._lock:
+            ledger_entry = dict(self._directives[key]) if key in self._directives else None
+        if ledger_entry is not None:
+            task = {"id": ledger_entry.get("task_id"), "uuid": key}
+        else:
+            try:
+                task = json.loads(self.run("show", key, "--format", "json"))
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"can't resolve task {task_id} on this worker's replica ({e}): the replica has no row "
+                    "for this task yet. Ask the coordinator to re-send the directive (that also refreshes "
+                    "the replica), or pass the task's full uuid if you have it. Don't act until it resolves."
+                ) from None
         with self._lock:
             effective = dict(self._directives[task["uuid"]]) if task["uuid"] in self._directives else None
         state = context["fleet_state"]["state"]
