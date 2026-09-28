@@ -96,20 +96,27 @@ pattern read {p}/coordinator/presence
 pattern write {p}/receipts/%c
 """
 
+# The ACL as it was before this server version: presence write-only, and
+# none of the new topics.
+OLD_ACL = "\n".join(
+    l for l in ACL.replace("pattern readwrite {p}/presence/%c", "pattern write {p}/presence/%c").splitlines()
+    if "fleet/state" not in l and "coordinator/presence" not in l and "receipts" not in l
+) + "\n"
+
 
 class Broker:
-    def __init__(self, prereqs, workdir: Path):
+    def __init__(self, prereqs, workdir: Path, name="broker", acl=ACL):
         self.bin = prereqs["mosquitto"]
-        self.dir = workdir / "broker"
+        self.dir = workdir / name
         self.dir.mkdir()
         self.port = free_port()
         self.log = self.dir / "mosquitto.log"
         passwd = self.dir / "passwd"
-        for user in ("coord", "w1", "w2", "w3", "w4", "w9"):
+        for user in ("coord", "w1", "w2", "w3", "w4", "w5", "w9"):
             flag = ["-c"] if not passwd.exists() else []
             subprocess.run([prereqs["passwd"], "-b", *flag, str(passwd), user, PASSWORD], check=True)
         os.chmod(passwd, 0o600)
-        (self.dir / "acl").write_text(ACL.format(p=PREFIX))
+        (self.dir / "acl").write_text(acl.format(p=PREFIX))
         os.chmod(self.dir / "acl", 0o600)
         (self.dir / "mosquitto.conf").write_text(
             f"listener {self.port} 127.0.0.1\n"
@@ -331,13 +338,15 @@ class Scenario:
         self.broker.start()
         self.coord_db = self.workdir / "coord.db"
         self.cli(self.coord_db, "init")
-        t1 = json.loads(self.cli(self.coord_db, "add", "task one", "--json"))["task"]
-        t2 = json.loads(self.cli(self.coord_db, "add", "task two", "--json"))["task"]
         w2_files = self.workdir / "w2-explicit-files"
         try:
             coord = await self.coordinator()
             w1 = await self.worker("w1")
             w2 = await self.worker("w2", files_dir=str(w2_files))
+            # Through the coordinator, so the snapshot reaches the replicas.
+            t1, t2 = [(await coord.call("add_task", title=t)) for t in ("task one", "task two")]
+            t1, t2 = t1.get("task", t1), t2.get("task", t2)
+            await self.until(lambda: self._when(w1.call("list_tasks"), lambda r: len(r["tasks"]) == 2))
             await self.startup(coord, w1, w2)
             await self.fleet_state(coord, w1)
             await self.directives(coord, w1, t1, t2)
@@ -349,6 +358,7 @@ class Scenario:
             await self.broker_outage(coord, w1)
             coord = await self.deadman(coord, w1)
             coord, w4 = await self.offline_fallback(coord, w1, t1)
+            await self.config_and_acl()
             if self.compat_ref:
                 await self.compat(coord, w1, t1, w4)
             denied = [l for l in self.broker.denied_lines() if " w9 " not in l and "(w9)" not in l and "w9," not in l]
@@ -373,6 +383,8 @@ class Scenario:
         workers = await self.until(lambda: self._when(coord.call("list_workers"), lambda r: len(r["workers"]) >= 2))
         self.check("list_workers has age_s and link", workers and all("age_s" in w for w in workers["workers"])
                    and "link" in workers, json.dumps(workers))
+        self.check("dead-man is off unless deadman_drain_after_s is set", workers and workers["deadman"]["enabled"] is False
+                   and workers["deadman"]["drains_at"] is None and workers["deadman"]["pauses_at"] is None)
 
     @staticmethod
     async def _when(coro, pred):
@@ -408,7 +420,8 @@ class Scenario:
         self.check("uuid and display id share one sequence; message default kind info",
                    hold["seq"] > go["seq"] and info["seq"] > hold["seq"] and info["kind"] == "info",
                    f"go={go['seq']} hold={hold['seq']} info={info['seq']}")
-        a = await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
+        # Drain the messages (hold, info) first: `superseded` is judged at
+        # drain time, so the go must be drained after the hold has arrived.
         m = {"messages": []}
 
         async def drain_both():
@@ -416,6 +429,7 @@ class Scenario:
             return len(m["messages"]) >= 2
 
         await self.until(drain_both, timeout=5)
+        a = await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
         self.check("older go marked superseded by the hold", a and a["assignments"][0]["superseded"] is True, json.dumps(a and a["assignments"]))
         by_kind = {x["kind"]: x for x in m["messages"]}
         self.check("hold not superseded; info never supersedes nor is superseded",
@@ -469,8 +483,30 @@ class Scenario:
             except ToolError as e:
                 self.check(f"assign_task rejects {args}", needle in str(e), str(e)[:100])
 
-        ld = await w1.call("latest_directive", task_id=12345)
-        self.check("latest_directive for an unknown task: null, not ok", ld["effective"] is None and ld["ok_to_act"] is False)
+        try:
+            await w1.call("latest_directive", task_id=12345)
+            self.check("latest_directive for an unknown task is an error", False)
+        except ToolError as e:
+            self.check("latest_directive for an unknown task is an error", "can't resolve task 12345" in str(e), str(e)[:120])
+
+        # A display id that moved to another task (renumber_task) must not
+        # hand that task the old one's go.
+        a = await coord.call("add_task", title="renumber A")
+        a = a.get("task", a)
+        await coord.call("assign_task", worker_id="w1", body="go on A", task_id=a["uuid"])
+        await self.until(lambda: self._when(w1.call("check_assignments"), lambda r: r["assignments"]))
+        await coord.call("renumber_task", id=a["uuid"], new_id=a["id"] + 100)
+        b = await coord.call("add_task", title="renumber B")
+        b = b.get("task", b)
+        await coord.call("renumber_task", id=b["uuid"], new_id=a["id"])
+        synced = await self.until(lambda: self._when(w1.call("show_task", id=a["id"]), lambda r: r["uuid"] == b["uuid"]))
+        ld = await w1.call("latest_directive", task_id=a["id"])
+        self.check("after renumber, the old display id resolves to the new task: no inherited go",
+                   bool(synced) and ld["task_uuid"] == b["uuid"] and ld["effective"] is None and ld["ok_to_act"] is False,
+                   json.dumps({k: ld[k] for k in ("task_id", "task_uuid", "effective", "ok_to_act")}))
+        ld = await w1.call("latest_directive", task_id=a["id"] + 100)
+        self.check("the renumbered task keeps its own go", ld["task_uuid"] == a["uuid"] and ld["effective"]["kind"] == "go"
+                   and ld["ok_to_act"] is True)
 
     async def receipts(self, coord, w1, w2):
         print("\n== receipts")
@@ -642,6 +678,21 @@ class Scenario:
         await asyncio.sleep(5.5)
         g = await coord.call("get_fleet_state")
         self.check("dead-man never relaxes a hand-set pause", g["state"] == "paused" and g["set_by"] == "coord", json.dumps({k: g[k] for k in ("state", "set_by")}))
+        # Broker away past drain_after: nothing may be queued while the link
+        # is down, so the dead-man can only act (legitimately) after reconnect.
+        await coord.call("set_fleet_state", state="active")
+        coord = await self.restart_coordinator(coord, checkin_file=str(checkin), deadman_drain_after_s=4, deadman_pause_after_s=8)
+        await self.until(lambda: self._when(coord.call("get_fleet_state"), lambda r: r["source"] == "retained"))
+        self.broker.stop()
+        await asyncio.sleep(6)
+        g = await coord.call("get_fleet_state")
+        self.check("dead-man doesn't act while the link is down", g["state"] == "active" and g["link"]["stale"], g["state"])
+        back_at = time.time()
+        self.broker.start()
+        g = await self.until(lambda: self._when(coord.call("get_fleet_state"), lambda r: r["state"] != "active"), timeout=45)
+        self.check("after reconnect it acts, published then (not queued during the outage)",
+                   bool(g) and g["set_by"] == "deadman" and g["set_at"] >= back_at,
+                   json.dumps(g and {"state": g["state"], "set_at": g["set_at"], "broker_back_at": back_at}))
         coord = await self.restart_coordinator(coord, deadman_drain_after_s=0)
         await coord.call("set_fleet_state", state="active")
         g = await coord.call("get_fleet_state")
@@ -677,7 +728,62 @@ class Scenario:
         fs = await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "active"
                                                  and r["fleet_state"]["source"] == "retained"))
         self.check("derived state lapses once the coordinator is back", bool(fs))
+
+        # A worker started long after the coordinator went away (cleanly,
+        # so its retained offline carries an old ts) gets the full grace
+        # period from its own start. Its config also carries a key this
+        # version doesn't know: warned about, then ignored.
+        await coord.stop()
+        self.nodes.remove(coord)
+        await asyncio.sleep(7)
+        w5 = await self.worker("w5", coordinator_offline_drain_after_s=3, some_future_option=True)
+        fs = await self.until(lambda: self._when(w5.call("fleet_state"), lambda r: r["coordinator"]["status"] != "unknown"), timeout=2) \
+            or await w5.call("fleet_state")
+        warned = "ignoring unknown config key(s)" in (self.workdir / "w5.stderr.log").read_text()
+        self.check("unknown config key: warning on stderr, server still starts", warned)
+        self.check("worker started after a clean coordinator exit: no instant fallback",
+                   fs["coordinator"]["status"] == "offline" and fs["fleet_state"]["state"] == "active",
+                   json.dumps({"fleet_state": fs["fleet_state"]["state"], "coordinator": fs["coordinator"]}))
+        fs = await self.until(lambda: self._when(w5.call("fleet_state"), lambda r: r["fleet_state"]["state"] == "draining"), timeout=8)
+        self.check("...then drains once its own grace period passes", bool(fs) and fs["fleet_state"]["source"] == "coordinator-offline")
+        await w5.stop()
+        self.nodes.remove(w5)
+        coord = await self.coordinator(deadman_drain_after_s=0)
+        await self.until(lambda: self._when(w4.call("fleet_state"), lambda r: r["coordinator"]["status"] == "online"))
         return coord, w4
+
+    async def config_and_acl(self):
+        print("\n== config validation, old broker ACL")
+        cfg = self.config("worker", "w9", worker_db_path=str(self.workdir / "bad.db"), heartbeat_interval_s="3h")
+        path = self.workdir / "bad.mqtt.json"
+        path.write_text(json.dumps(cfg))
+        env = {**os.environ, "TODO_SQLITE_CLI_MQTT_CONFIG": str(path), "TODO_SQLITE_CLI_BIN": self.prereqs["cli"],
+               "SCENARIO_MQTT_PW": PASSWORD}
+        r = subprocess.run([sys.executable, str(SERVER_DIR / "server.py")], env=env, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=30)
+        self.check("a malformed numeric value ('3h') is rejected loudly at load",
+                   r.returncode != 0 and "'heartbeat_interval_s' must be a number" in r.stderr, r.stderr.strip().splitlines()[-1][:160])
+
+        old_broker = Broker(self.prereqs, self.workdir, name="broker-old-acl", acl=OLD_ACL)
+        old_broker.start()
+        try:
+            w = await self.node("w1-old-acl", self.config("worker", "w1", port=old_broker.port,
+                                                           worker_db_path=str(self.workdir / "w1-old-acl.db")))
+            fs = await self.until(lambda: self._when(w.call("fleet_state"), lambda r: r["link"]["error"]))
+            self.check("new worker on the old ACL: link.error names the denied subscriptions",
+                       bool(fs) and "presence/w1 denied by broker ACL" in fs["link"]["error"], fs and fs["link"]["error"])
+            await asyncio.sleep(STALE_AFTER * HEARTBEAT_S + 1)
+            for tool in ("check_messages", "check_assignments"):
+                try:
+                    await w.call(tool)
+                    self.check(f"old ACL: {tool} gives the ACL error", False)
+                except ToolError as e:
+                    self.check(f"old ACL: {tool} gives the ACL error, not the stale-link one",
+                               "denied by broker ACL" in str(e) and "stale since" not in str(e) and "ACL first" in str(e), str(e)[:160])
+            await w.stop()
+            self.nodes.remove(w)
+        finally:
+            old_broker.stop()
 
     async def compat(self, coord, w1, t1, w4):
         print(f"\n== mixed versions vs {self.compat_ref}")
