@@ -42,6 +42,8 @@ def _read_cargo_version():
 VERSION_FILES = [
     # (path, pattern, replacement-template)
     ("Cargo.toml", r'^(version = ")' + SEMVER + r'(")', r"\g<1>{new}\g<2>"),
+    # The MCP server ships in lockstep with the crate.
+    ("mcp_server/pyproject.toml", r'^(version = ")' + SEMVER + r'(")', r"\g<1>{new}\g<2>"),
     (
         "man/todo-sqlite-cli.1",
         r"(todo-sqlite-cli )" + SEMVER + r'(")',
@@ -58,11 +60,12 @@ VERSION_FILES = [
 
 @task
 def bump_version(c, new_version=None):
-    """Bump this crate's version across every file that embeds it.
+    """Bump this crate's version (and the MCP server's) across every file that embeds it.
 
     Reads the current version from Cargo.toml. With no --new-version, prints
     the current version and the files that would change (dry run). Otherwise
-    rewrites Cargo.toml, the man page version, and the man page date.
+    rewrites Cargo.toml, mcp_server/pyproject.toml, the man page version, and
+    the man page date.
 
     Args:
         new_version: Target version string, e.g. 1.8.1 (no leading 'v').
