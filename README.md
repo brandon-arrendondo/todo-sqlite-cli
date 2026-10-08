@@ -653,6 +653,12 @@ See [ALTERNATIVES.md](ALTERNATIVES.md) for the full landscape (Rust crates,
 MCP servers, Claude Code's built-in tasks, Taskwarrior, dstask, todo.txt-cli)
 and when *not* to use this tool.
 
+## AI Assistance
+
+todo-sqlite-cli was developed with assistance from [Claude](https://claude.ai) (Anthropic), used for code generation, bug fixes, release packaging, and documentation. From October 2026, [Codex](https://openai.com/codex/) (OpenAI) also contributed the tooling that enforces the agent and commit guidelines. Each of its changes was reviewed before it was merged.
+
+Many earlier commits have a `Co-Authored-By: Claude` trailer, but not every AI-assisted commit does, so the trailers are not a complete record. From October 2026 the contribution is acknowledged once, here, and not with a co-author trailer on each commit.
+
 ## Development
 
 ```
