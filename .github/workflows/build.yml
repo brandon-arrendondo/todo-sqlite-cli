@@ -201,7 +201,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
-          Maintainer: Brandon Arrendondo <brandon@arrendondo.dev>
+          Maintainer: Brandon Arrendondo <brandon.arrendondo@bissell.com>
           Homepage: https://github.com/brandonarrendondo/todo-sqlite-cli
           Description: Per-project TODO list CLI backed by SQLite
            A scriptable per-project TODO list backed by SQLite, designed for
