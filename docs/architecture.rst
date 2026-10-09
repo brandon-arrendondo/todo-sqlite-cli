@@ -14,7 +14,7 @@ the code alone.
 Overview
 --------
 
-``todo-sqlite-cli`` is a single Rust binary (~5 100 lines) backed by SQLite
+``todo-sqlite-cli`` is a single Rust binary backed by SQLite
 (bundled via ``rusqlite``'s ``bundled`` feature — no system SQLite
 dependency). An optional Python MCP server (``mcp_server/``) wraps the
 binary for coding-agent tool use; it is a thin subprocess wrapper, not a
@@ -35,10 +35,10 @@ The codebase has three conceptual layers:
     │  schema + migrations · 3-way merge engine · output shaping  │
     └────────────────────────────────────────────────────────────┘
 
-``src/db.rs`` (~880 lines) owns the schema, all ``migrate_vN_to_vN+1``
+``src/db.rs`` owns the schema, all ``migrate_vN_to_vN+1``
 functions, and ``resolve_one``/uuid-vs-display-id lookup. ``src/merge.rs``
-(~760 lines) is the standalone 3-way merge engine — see
-:doc:`merge-engine`. ``src/format.rs`` (~340 lines) shapes task
+is the standalone 3-way merge engine — see
+:doc:`merge-engine`. ``src/format.rs`` shapes task
 output across table/json/ndjson/markdown.
 
 ---------------------------------------------------------------------------
@@ -88,10 +88,10 @@ the CLI evaluates.
 Backlog trend: age-weighted priority was considered and deferred
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``cfd`` and ``aging`` (both read-only, additive, no schema change — every
-timestamp they need was already on ``tasks``) ship a "which low-priority
-tasks have aged unnoticed" signal for periodic backlog rebases. Two designs
-were considered for turning that signal into action:
+``cfd`` and ``aging`` use timestamps already on ``tasks`` to report which
+low-priority tasks have aged unnoticed, for periodic backlog rebases. Normal
+database opening can still migrate an old schema before reporting.
+Two designs were considered for turning that signal into action:
 
 - **Option A (shipped)** — ``aging --stale-days N`` reports tasks over the
   threshold; a human (or reviewing agent) reads the report and manually
@@ -103,8 +103,8 @@ were considered for turning that signal into action:
 Option A shipped alone. Reasons Option B was deferred rather than built
 alongside it:
 
-- Option A is purely additive and read-only — zero risk to ``next``'s
-  existing ordering contract, which other tooling/agents already depend on
+- Option A leaves task rows and ``next``'s ordering contract unchanged.
+  Other tooling/agents already depend on that contract
   (documented and load-bearing across every consuming repo).
 - Option B changes the *meaning* of ``priority`` (stored vs. effective/
   displayed value) and raises real unresolved design questions: what aging
@@ -133,4 +133,4 @@ work episode's start, not necessarily the first time work ever began, for
 tasks that were reverted at least once. This under-counts historical
 in-progress time for those tasks. Acceptable for a trend/rebase signal, but
 worth calling out explicitly rather than presenting it as exact — this page
-is that callout; neither ``--help`` nor the README mentions it yet.
+is that callout; the usage guide and README describe this limitation.

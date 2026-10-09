@@ -1,17 +1,20 @@
 ================================
-todo-sqlite-cli Developer Guide
+todo-sqlite-cli Guide
 ================================
 
-This is internal/developer documentation for people working *on*
-``todo-sqlite-cli`` itself — design rationale, the merge engine's rules, and
-incidents that shaped current safeguards. For using the tool, see the
-project `README <https://github.com/brandon-arrendondo/todo-sqlite-cli#readme>`_
-instead.
+User and developer documentation for ``todo-sqlite-cli``: installation,
+CLI/database behavior, design rationale, merge rules, and the incident record
+behind current safeguards. The repository README covers the optional MCP and
+MQTT deployment workflow.
 
 .. toctree::
    :maxdepth: 3
    :caption: Contents
 
+   installation
+   usage
+   troubleshooting
+   development
    architecture
    merge-engine
    incidents

@@ -15,7 +15,7 @@ v2→v3 merge mass-duplicated tools_sqc's task history
 -----------------------------------------------------
 
 :Date: 2026-08-27
-:Reporter: Claude Code session working in ``~/data-enterprise/tools_sqc`` (bench node)
+:Reporter: Coding-agent session on a shared project database
 :Repo affected: ``tools_sqc``'s ``todo-sqlite-cli.db``
 :Severity: High — every pre-existing task in the shared DB was duplicated
    (618 of 620 tasks affected; 1238 rows after the merge instead of 620)
@@ -24,6 +24,12 @@ v2→v3 merge mass-duplicated tools_sqc's task history
    schema versions before opening any of them for real, and refuses the
    merge outright on a mismatch. See :doc:`merge-engine` for where this
    sits in the merge flow.
+
+.. note::
+
+   This incident account uses v2/v3 schema labels. The current source
+   introduces UUID identity in its v4-to-v5
+   migration; see :doc:`merge-engine` for the current behavior.
 
 Summary
 ~~~~~~~
@@ -136,7 +142,7 @@ a silent mass-duplication.
 ---------------------------------------------------------------------------
 
 Titles/details starting with ``-`` were rejected by the argument parser
-----------------------------------------------------------------------
+-----------------------------------------------------------------------
 
 :Date: 2026-09-11
 :Reporter: Coordinator session on ``tools_sqc``'s ``fleet-tasks.db``

@@ -1,8 +1,8 @@
 ## Task tracking
 
 This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
-`.todo-sqlite-cli` marker at the repo root (or `$TODO_SQLITE_CLI_DB`, or the
-`--db` flag — in that precedence order).
+`--db` flag, then nonempty `$TODO_SQLITE_CLI_DB`, then a
+`.todo-sqlite-cli` marker found by walking up from the current directory.
 
 > **If the MCP server is wired up** (`todo` in your MCP servers config), use
 > the MCP tools (`list_tasks`, `add_task`, `start_task`, etc.) instead of the
@@ -12,12 +12,13 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 **Before planning or coding, ask the DB — do not read a PLAN.md file:**
 
 - `todo-sqlite-cli next` — the single task to work on right now. Returns
-  the oldest in-progress task, then the oldest partial (paused) task, then
+  the oldest in-progress task, then the highest-priority unblocked partial
+  (paused) task (oldest started_at as tie-break), then
   the highest-priority unblocked pending task. Prefer this over `list` —
-  it returns one task in one query. When no work remains, `next` prints
-  nothing (or `null` under `--json`) and exits 0 — use that as a clean
-  termination signal. `next` never surfaces a gate task (see **Gates**
-  below); if only gates remain open it still reports nothing actionable,
+  it returns at most one task. When none is selected, `next` prints
+  nothing (or `null` under `--json`) and exits 0. No task was selected;
+  blocked work or open gates may remain. `next` never surfaces a gate task
+  (see **Gates** below); if only gates remain open it still reports nothing actionable,
   with a stderr hint pointing at `list --kind gate`.
 - `todo-sqlite-cli list` — active tasks (in-progress + partial + pending),
   ordered by status then priority. Tabular output is already terse.
@@ -29,10 +30,11 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 
 **Cheap re-polling (token-frugal):**
 
-- `todo-sqlite-cli list --ids-only` — just IDs, one per line. Cheapest way
-  to detect change between turns. Combine with `--json` for an ID array.
+- `todo-sqlite-cli list --ids-only` — just IDs, one per line. Cheap way
+  to inspect membership; it does not detect edits to existing tasks.
+  Combine with `--json` for an ID array.
 - `todo-sqlite-cli list --since 2026-05-07` — only tasks created on/after a
-  date, for incremental updates.
+  date; it does not filter by modification time.
 - `todo-sqlite-cli export-todo --format markdown` — terse markdown by
   default; pass `--verbose` only when you need every field.
 - `todo-sqlite-cli export-completed` — compact JSON by default; pass
@@ -72,8 +74,8 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
 - `todo-sqlite-cli add "title" --details "..." --tag <area> --priority <P>`
   where `<P>` is `1`-`5` or `P1`-`P5` (priority 1 is highest, 3 is default).
 - `--depends-on <id>` on `add` to link a prerequisite at creation time.
-  Tasks with unmet dependencies are skipped by `next` and flagged
-  `[blocked]` in `list`. Prefer wiring deps at `add` time over editing
+  Blocked partial/pending tasks are skipped by `next`; its in-progress tier
+  does not recheck dependencies. Blocked tasks are flagged `(blocked)` in `list`. Prefer wiring deps at `add` time over editing
   later.
 
 **Editing or annotating a task:**

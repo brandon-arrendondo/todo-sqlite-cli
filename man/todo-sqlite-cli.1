@@ -15,12 +15,13 @@ well as a plain CLI in shell scripts, CI jobs, and human workflows.
 The tool stores tasks in a single SQLite file so state is durable, queryable,
 and shareable across multiple repositories.
 .PP
-Every command supports
+The global
 .B \-\-json
-for machine-readable output and
+flag requests machine-readable output where implemented, and
 .B \-\-db
 .I PATH
-to override database resolution.
+to override normal database resolution. Merge commands instead use their
+explicit paths; the merge-driver installer and Git driver retain text output.
 On
 .BR list " and " export-todo
 the JSON output is wrapped:
@@ -113,7 +114,7 @@ claimed this task; usually left unset and stamped later via
 (which project this task belongs to, for a coordinator's db spanning
 several; shown as a
 .I +project
-prefix in
+suffix in
 .BR list ).
 .TP
 .B list
@@ -152,9 +153,11 @@ boolean in json/ndjson output).
 .TP
 .B next
 Print the single task to work on next. Returns the oldest in-progress task,
-then the oldest unblocked partial task, then the highest-priority unblocked
-pending task.
-Skips tasks with unmet dependencies and always excludes gates \(em a gate is
+then the highest-priority unblocked partial task (earliest started_at
+breaks ties), then the highest-priority unblocked pending task
+(earliest created_at breaks ties).
+Filters unmet dependencies for partial and pending tasks; the in-progress
+tier does not recheck them. All tiers exclude gates \(em a gate is
 never "the task to work on next". If every remaining unblocked task is a
 gate, prints nothing actionable (a stderr hint points at
 .BR "list \-\-kind gate" )
@@ -659,24 +662,23 @@ than rely on the git driver.
 is reconciled per-field, preferring whichever side changed it (or
 .B \-\-ours
 on a genuine same-field clash, e.g. both sides gave a task a different
-title); a task new to both sides sharing an id is treated as two unrelated
-tasks and the
-.B \-\-theirs
-copy is renumbered. Without
+title). Tasks are matched by UUID, not display id. Different UUIDs are
+kept separately even when their display ids match; merging does not
+renumber them. Without
 .BR \-\-base ,
-every overlapping id is treated as an unrelated-task collision (nothing is
-field-merged) \(em a safe fallback, but only use it when you don't have the
-ancestor available.
+matching UUIDs still form one task, but differing scalar fields keep ours
+and are flagged for review.
 .B \-\-into
 defaults to overwriting
 .B \-\-ours
 in place.
 .B \-\-strict
-aborts (exit 1, nothing written) on the first genuine conflict instead of
+aborts (exit 1, output not replaced) when any hard conflict is found instead of
 auto-resolving and flagging it.
 .PP
-Tags, priority, and dependency and related-task edges union or auto-resolve
-without ever being flagged. A genuine conflict \(em both sides changed the
+With a common ancestor, tags and dependency/related edges union, and
+priority auto-resolves to the more urgent value. Without a common ancestor,
+a differing priority is a hard conflict. A genuine conflict \(em both sides changed the
 same field to different values in a way that can't be ranked (title,
 .BR location ,
 .BR implementation_client ,
@@ -802,7 +804,8 @@ Success.
 User error: bad input, missing database, violated invariant, task not found.
 .TP
 .B 2
-System error: unwritable path, corrupt database, failed migration.
+System error, such as corrupt database or failed migration; also used for
+command-line parsing failures.
 .SH AUTHORS
 Brandon Arrendondo <brandon.arrendondo@bissell.com>
 .PP

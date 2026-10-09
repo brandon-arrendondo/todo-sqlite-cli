@@ -20,14 +20,16 @@ decide.
 Identity problem
 -----------------
 
-A task's ``uuid`` (schema v5+; ``id`` before that) is the merge identity.
-Two databases that diverged from a common point may each have allocated
-new tasks independently — an id/uuid present in both "ours" and "theirs"
-is only the *same task* if both descend from a row that already had that
-identity at the fork point. A merge can't assume matching identity means
-matching task without knowing what existed at the fork point. See
-:doc:`incidents` for what goes wrong when this assumption is violated by a
-node merging across mismatched schema versions.
+A task's ``uuid`` (schema v5+) is its identity. The numeric ``id`` is a
+display alias and may be duplicated, reused after deletion, or changed by
+``renumber``. Merge matches UUIDs, including without a common ancestor.
+Different UUIDs are distinct tasks even when their display IDs match.
+
+The v4-to-v5 migration generates fresh UUIDs for existing rows. Copies of an
+old backlog must share one UUID-bearing migration snapshot before diverging.
+Independently migrating copies of the same pre-UUID database does not create
+matching identities. Schema-version equality is necessary for the merge guard
+but does not establish shared UUID history. See :doc:`incidents`.
 
 ---------------------------------------------------------------------------
 
@@ -37,10 +39,10 @@ The three-way core
 ``merge_databases(base: Option<&Connection>, ours, theirs, out, opts) -> MergeReport``
 in ``src/merge.rs`` is the single engine both entry points call.
 
-- ``base_ids`` = the set of task identities present in ``base`` (empty set
+- ``base_uuids`` = the set of task identities present in ``base`` (empty set
   if ``base`` is ``None`` — no common ancestor, e.g. the manual 2-way form,
   or git's ``%O`` for a file added independently on both sides).
-- **Common tasks** (identity present in ``base``, and in ``ours`` and/or
+- **Common tasks** (UUID present in ``base``, and in ``ours`` and/or
   ``theirs``): reconciled per-field against the base row — this is the
   real 3-way merge.
 
@@ -50,31 +52,25 @@ in ``src/merge.rs`` is the single engine both entry points call.
   - Present in base, missing from one side, *changed* in the other →
     modify/delete conflict: keep the modified (undeleted) version, flag it.
   - Present in base, present in both → per-field merge (see below).
-  - Present in both, but **not** in base (no common ancestor at all — the
-    2-way form) → ``merge_common_no_base``: a field that agrees on both
-    sides carries through unchanged; a field that disagrees can't be
-    attributed to either side, so it's a conflict — keep ``ours``, tag it.
 
-- **New tasks** (identity not in ``base_ids``): a task new to exactly one
-  side is kept as-is. A task new to *both* sides sharing the same display
-  id is a pure id collision (two unrelated tasks that happened to get the
-  same value) — never field-merged. ``ours``'s new tasks keep their ids;
-  any of ``theirs``'s new tasks that collide (with an ``ours`` id or with
-  each other after remapping) get renumbered above the current max id, in
-  ``created_at`` order for determinism. The renumbering map is applied to
-  ``theirs``'s tags, dep edges, and related edges (all endpoints) before
-  anything is unioned in, including edges from common tasks that reference
-  a renumbered id.
-- This means the 2-way form (``base = None``) isn't a separate code
-  path — it's the 3-way engine with an empty base, which naturally makes
-  *every* overlapping identity a collision to renumber. One engine, two
-  entry points.
+- **UUIDs unknown to base but present on both sides** are still the same
+  task and use ``merge_common_no_base``. Equal scalar fields carry through;
+  unequal scalar fields keep ours and are hard conflicts, including details,
+  priority, and status. Tags, dependency edges and related edges union.
+- **UUIDs present on only one side and absent from base** carry through with
+  their original display IDs. Matching display IDs do not trigger automatic
+  renumbering. Use ``doctor`` to find aliases shared by different UUIDs and
+  ``renumber <full-uuid> <new-id>`` to resolve them explicitly.
+
+Without a base, the known-base reconciliation pass is empty. Shared UUIDs
+still reconcile once, and different UUIDs still remain separate. A common
+ancestor enables attribution of which side changed each scalar field.
 
 Per-field rules for a common task
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Let ``changed(x) = x_side != x_base``. Fields not listed below (e.g.
-``created_at``) are immutable and always take the base value.
+Let ``changed(x) = x_side != x_base``. For common tasks, ``created_at`` and the display ``id`` take the base value.
+A side's display-ID renumbering is not merged into a common task.
 
 .. list-table::
    :header-rows: 1
@@ -85,7 +81,7 @@ Let ``changed(x) = x_side != x_base``. Fields not listed below (e.g.
    * - ``title``
      - Only one side changed → take it. Both changed to the *same* value →
        fine. Both changed to *different* values → **hard conflict**: keep
-       ``ours``, tag ``merge-conflict``, note the clash in ``details``.
+       ``ours``, tag ``merge-conflict``, report the clash.
    * - ``details``
      - Only one side changed → take it. Both changed → diff each side's
        delta against the base text and concatenate both deltas (mirrors
@@ -115,23 +111,23 @@ Let ``changed(x) = x_side != x_base``. Fields not listed below (e.g.
    * - ``tags``
      - Plain union of ``ours`` ∪ ``theirs``. Never a conflict.
    * - ``deps``
-     - Union of both sides' edges (after id remapping), skipping
+     - Union of both sides' UUID edges, skipping
        self-loops and any edge that would introduce a cycle in the merged
        graph (dropped silently — cycles can only arise from the union of
        two acyclic graphs in pathological cross-referencing new-task
        cases).
    * - ``related``
-     - Union of both sides' edges (after id remapping), then symmetrized —
+     - Union of both sides' UUID edges, then symmetrized —
        every link is mirrored on both endpoints, dangling references (a
        related task that no longer exists post-merge) are dropped, and a
        self-link is dropped. Never a hard conflict.
 
 A **hard conflict** means: the affected task gets tagged ``merge-conflict``
-and a line appended to ``details`` recording both values, so
+and the clash is recorded in the merge report, so
 ``list --tag merge-conflict`` / ``show <id>`` surface it for a human to
 resolve with ``edit``, same as any other task. ``--strict`` changes this:
-on the first hard conflict, abort entirely (exit 1, ``--into`` file
-untouched) instead of writing a best-effort result.
+if any hard conflict is found, do not replace the output (exit 1) instead
+of writing a best-effort result.
 
 ---------------------------------------------------------------------------
 
@@ -166,12 +162,16 @@ operating on specific files handed to them, not "the" project database.
 Output DB construction
 ------------------------
 
-Read ``base``/``ours``/``theirs`` fully into memory as plain Rust structs
-(each opened read-only via ``db::open``, which auto-migrates it to
-``SCHEMA_VERSION`` first — safe here only because the schema-version guard
-above has already confirmed all three sides agree before any of them are
-opened), compute the merged task/tag/dep/related sets purely in memory,
-then write the result into a fresh file at a temp path via
-``db::create_schema`` + explicit-id inserts, restore ``sqlite_sequence`` to
-the merged max id, and ``fs::rename`` into place. Never mutate
-``ours``/``theirs``/``base`` in place; never write partial output on error.
+Read ``base``/``ours``/``theirs`` fully into memory as plain Rust structs.
+Both entry points check present schema versions before the normal read/write
+``db::open`` calls can migrate inputs to ``SCHEMA_VERSION``. Compute merged
+task/tag/dependency/related sets in memory, then write a fresh file at a temp
+path through ``db::create_schema`` and explicit-ID inserts. Finally use
+``fs::rename`` to replace the output. The current schema has no display-ID
+AUTOINCREMENT sequence; ``add`` allocates from the current maximum.
+
+Task reconciliation does not edit the input rows directly, but opening inputs
+can set WAL mode and migrate equally old schemas before output construction.
+Thus ``--strict`` protects output replacement, not all filesystem changes to
+inputs. Back up databases before migration or merge. Both entry points refuse
+mismatched schema versions before using the normal opener.

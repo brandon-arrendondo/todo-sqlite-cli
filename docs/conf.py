@@ -1,4 +1,4 @@
-# Sphinx configuration for todo-sqlite-cli Developer Guide
+# Sphinx configuration for todo-sqlite-cli Guide
 
 project = 'todo-sqlite-cli'
 author = 'Brandon Arrendondo'
@@ -24,6 +24,6 @@ latex_elements = {
 }
 
 latex_documents = [
-    ('index', 'todo-sqlite-cli-developer-guide.tex', 'todo-sqlite-cli Developer Guide',
+    ('index', 'todo-sqlite-cli-developer-guide.tex', 'todo-sqlite-cli Guide',
      'Brandon Arrendondo', 'manual'),
 ]

@@ -7,23 +7,23 @@ calls over shell commands.
 
 `--help` works on every command and is the reference for a plain
 `cargo install`. A full man page also exists (`man/todo-sqlite-cli.1` in
-this repo) but isn't part of the crates.io package — see Install below for
-how to get it.
+this repo); `cargo install` does not install it into your system man path.
+See Install below for obtaining and installing the companion files.
 
 ## Install
 
 ```
-cargo install todo-sqlite-cli
+cargo install todo-sqlite-cli --locked
 ```
 
-Single static binary, SQLite bundled — but `cargo install` only builds the
+Single Rust executable, SQLite bundled — but `cargo install` only builds the
 binary itself, nothing else in this repo. For the man page or the optional
 MCP server (see below), download the
 `todo-sqlite-cli-<os>-x64-<version>.tar.gz`/`.zip` archive from a
 [release](https://github.com/brandon-arrendondo/todo-sqlite-cli/releases)
 instead — it bundles the binary alongside `man/`, `mcp_server/`, and
-licensing info. Pre-built `.deb`/`.rpm`/AppImage packages (which install
-the man page into the system man path directly) are attached there too.
+licensing info. Release CI also prepares `.deb`/`.rpm`/AppImage packages
+with the manual; check the release assets for available packages.
 
 ## Quickstart
 
@@ -35,14 +35,19 @@ $ todo-sqlite-cli start 1
 $ todo-sqlite-cli done 1
 ```
 
-The DB path is resolved from `--db`, then `$TODO_SQLITE_CLI_DB`, then a
+For commands operating on an existing database, the DB path is resolved
+from `--db`, then nonempty `$TODO_SQLITE_CLI_DB`, then a
 `.todo-sqlite-cli` marker walked up from cwd (like `.git`). One DB can back
 multiple repos by pointing each repo's marker at the same absolute path.
+Relative marker paths resolve against the marker directory. `init` is
+separate: without `--db`, it creates a database and marker in the current
+directory (or `--marker-dir`) rather than using the environment or a parent
+marker. See [database selection](docs/usage.rst).
 
 ## Backlog trend reporting
 
-Two read-only, additive report commands, reconstructed from timestamps
-already on `tasks` — no schema change, no snapshotting:
+Two report commands reconstruct trends from timestamps already on `tasks`,
+without adding event tracking or editing task rows:
 
 ```
 $ todo-sqlite-cli cfd --bucket week
@@ -58,7 +63,11 @@ $ todo-sqlite-cli aging --stale-days 14
 the backlog thinning or just churning." `aging` lists open tasks oldest
 `created_at`-first and flags anything past `--stale-days` as a rebase
 candidate — it does not change `priority` or `next`/`list` ordering itself;
-pair it with `edit --priority` to act on what it surfaces.
+pair it with `edit --priority` to act on what it surfaces. These reports
+reconstruct history from current timestamps, not an event log: reverting
+clears `started_at`, so historical work episodes are not preserved.
+Report commands still use the normal database opener and can migrate an
+older schema even though they do not edit task rows.
 
 ## Gates
 
@@ -112,14 +121,13 @@ Location: warehouse-3
 
 A task can also carry an `implementation_client` — which client (an MQTT
 client id) last claimed it. It's part of the optional [MQTT sync](#mqtt-sync-optional-coordinatorworker)
-feature below; set it directly with `--implementation-client`/
-`--clear-implementation-client` on `add`/`edit`, or let a coordinator
-auto-stamp it. Unlike `started_at`, it's sticky — `stop`/`revert` never
+feature below; set it with `--implementation-client` on `add` or `edit`, clear it with
+`edit --clear-implementation-client`, or let a coordinator auto-stamp it. Unlike `started_at`, it's sticky — `stop`/`revert` never
 clear it. Shows as a `Client:` line on `show` only (no `list` suffix).
 
 A coordinator's db often spans several projects at once — `--project-name`
 records which one a task belongs to (todo.txt's `+project` convention). It
-shows up in `list` as a `+project` prefix on the title (alongside the
+shows up in `list` as a `+project` suffix on the title (alongside the
 `@location` suffix), as a `Project:` line on `show`, and `list
 --project-name <name>` filters down to just that project's tasks.
 
@@ -159,11 +167,12 @@ $ todo-sqlite-cli list --tag merge-conflict
 No driver installed, or merging two databases by hand? `merge --ours
 --theirs [--base] [--into]` does the same thing on demand — pass `--base`
 (the common-ancestor db, e.g. from `git show <merge-base>:path/to.db`) for
-a real three-way merge; without it, every overlapping task id is treated as
-an unrelated collision and renumbered rather than field-merged.
+a real three-way merge; without it, matching UUIDs are still reconciled as one task, but
+differing fields keep ours and are flagged. Different UUIDs remain separate
+even if their display IDs match; the merge does not renumber them.
 
 A merge can leave two unrelated tasks sharing the same display id (identity
-is each task's uuid, so nothing is lost — `show <id>` just lists both).
+is each task's uuid, so nothing is lost — `show <id>` fails with both matches listed).
 Run `doctor` to spot these, then `renumber <uuid> <new-id>` to give one of
 them a fresh id:
 
@@ -172,24 +181,19 @@ $ todo-sqlite-cli doctor
 $ todo-sqlite-cli renumber 3f9c1e2a-... 42
 ```
 
-If a node's local database has been sitting untouched across a schema
-upgrade (e.g. it was cloned or created long ago and no command has run
-against it since), don't let the merge driver be the first thing to touch
-it. Migrating a database mid-merge is unsafe when the other side is already
-on a newer schema — some migrations mint a fresh uuid for every pre-existing
-row with no way to recognize "this row on the old side is the same task as
-that row on the new side," so a subsequent uuid-based merge would union them
-as unrelated tasks and duplicate the whole backlog. The merge driver detects
-this (comparing schema versions before opening anything) and refuses with an
-error rather than merging silently. Fix it by running any command (e.g.
-`doctor`) against the stale local database on its own, *before* pulling —
-that migrates it deterministically against a pristine copy — then retry the
-pull/merge.
+Both manual merges and the Git driver check schema versions before normal
+opening can migrate inputs. Mismatched versions are refused. Back up the
+databases before resolving a mismatch. When upgrading a pre-UUID database,
+migrate one shared snapshot and distribute it before diverging again;
+independently migrating old copies generates different UUIDs for the same
+historical tasks. Merely running `doctor` separately on every copy can align
+schema versions while leaving incompatible identity histories. See the
+[merge guide](docs/merge-engine.rst) and [incident record](docs/incidents.rst).
 
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the
-binary as 12 tool calls (`list_tasks`, `add_task`, `start_task`, etc.) for
+binary as 13 tool calls (`list_tasks`, `add_task`, `start_task`, etc.) for
 agents that use MCP rather than shell commands. It delegates all storage and
 logic to the Rust binary — no second database, no duplicate code.
 
@@ -201,7 +205,7 @@ Not published to PyPI — a plain `cargo install` doesn't include it, so get
 run the script in place —
 
 ```
-pip install mcp
+pip install "mcp>=1,<2"
 python3 /path/to/mcp_server/server.py
 ```
 
@@ -212,7 +216,7 @@ a `todo-mcp-server` command on `PATH`:
 pip install /path/to/mcp_server
 ```
 
-**Wire it into Claude Code** (`.claude/settings.json`):
+**Example MCP client configuration** (adapt the file location and outer structure to your client):
 
 ```json
 "mcpServers": {
@@ -628,17 +632,21 @@ descriptions carry the same invariants; no `CLAUDE.md` snippet needed.
 
 The non-obvious invariants either way:
 
-- IDs are `AUTOINCREMENT` and **never reused** after `rm` — safe to cite by
-  ID across turns.
+- UUIDs are task identity. Display IDs use `MAX(id) + 1` at insertion;
+  deleting the highest ID can let a later task reuse it, and merges can
+  leave duplicates. Use full UUIDs for durable references.
 - `start <id>` **auto-pauses** any prior in-progress task to `partial`
   (preserving `started_at`) — no manual stop/start choreography.
-- `next` **skips blocked tasks** (unmet deps).
+- `next` checks dependencies for partial and pending tasks; its in-progress
+  tier returns current work without rechecking dependencies.
 - `done` is **idempotent**.
 - Output is **compact by default**; pass `--verbose` or `--pretty` only
   when a human is reading.
 
-Exit codes: `0` success, `1` user error, `2` system error. Every command
-supports `--json` and `--db PATH`.
+Exit codes: `0` success, `1` runtime user error, `2` runtime system error
+or command-line parsing failure. `--json` and `--db PATH` are global flags;
+the merge commands use their explicit database paths, and the Git driver
+and installer do not produce JSON.
 
 ## Why
 
@@ -659,9 +667,22 @@ todo-sqlite-cli was developed with assistance from [Claude](https://claude.ai) (
 
 Many earlier commits have a `Co-Authored-By: Claude` trailer, but not every AI-assisted commit does, so the trailers are not a complete record. From October 2026 the contribution is acknowledged once, here, and not with a co-author trailer on each commit.
 
-## Development
+## Documentation and development
 
+The [Sphinx guide](docs/index.rst) covers installation, database selection,
+CLI behavior, architecture, merge semantics, and troubleshooting:
+
+- [Installation](docs/installation.rst)
+- [CLI and database selection](docs/usage.rst)
+- [Merge engine](docs/merge-engine.rst)
+- [Troubleshooting](docs/troubleshooting.rst)
+- [Contributor setup and checks](docs/development.rst)
+
+```sh
+cargo build --locked
+cargo test --locked
+pre-commit run --all-files
 ```
-cargo build
-cargo test
-```
+
+Read [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) before contributing.
+The repository toolchain tracks stable; Cargo.toml declares Rust 1.75.
