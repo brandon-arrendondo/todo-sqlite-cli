@@ -75,8 +75,8 @@ This repo uses `todo-sqlite-cli` for TODOs. The DB path is resolved via the
   where `<P>` is `1`-`5` or `P1`-`P5` (priority 1 is highest, 3 is default).
 - `--depends-on <id>` on `add` to link a prerequisite at creation time.
   Blocked partial/pending tasks are skipped by `next`; its in-progress tier
-  does not recheck dependencies. Blocked tasks are flagged `(blocked)` in `list`. Prefer wiring deps at `add` time over editing
-  later.
+  does not recheck dependencies. Blocked tasks are flagged `[blocked]` in
+  `list`. Prefer wiring deps at `add` time over editing later.
 
 **Editing or annotating a task:**
 

@@ -145,7 +145,7 @@ Titles/details starting with ``-`` were rejected by the argument parser
 -----------------------------------------------------------------------
 
 :Date: 2026-09-11
-:Reporter: Coordinator session on ``tools_sqc``'s ``fleet-tasks.db``
+:Reporter: Session on the coordinator's task database
 :Severity: Medium — no data corrupted, but the whole ``add``/``edit`` call
    failed. Through the MCP server's ``approve_request`` the worker's
    request was rejected with only a parser error, and the coordinator had

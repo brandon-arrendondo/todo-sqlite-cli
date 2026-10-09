@@ -54,9 +54,12 @@ in ``src/merge.rs`` is the single engine both entry points call.
   - Present in base, present in both → per-field merge (see below).
 
 - **UUIDs unknown to base but present on both sides** are still the same
-  task and use ``merge_common_no_base``. Equal scalar fields carry through;
-  unequal scalar fields keep ours and are hard conflicts, including details,
-  priority, and status. Tags, dependency edges and related edges union.
+  task and use ``merge_common_no_base``. It compares ``title``, ``details``,
+  ``status``, ``priority``, ``is_gate``, ``location``,
+  ``implementation_client`` and ``project_name``. Equal values carry through;
+  differing values keep ours and are hard conflicts. Display ID and
+  ``created_at``/``started_at``/``completed_at`` take ours without a conflict,
+  even when they differ. Tags, dependency edges and related edges union.
 - **UUIDs present on only one side and absent from base** carry through with
   their original display IDs. Matching display IDs do not trigger automatic
   renumbering. Use ``doctor`` to find aliases shared by different UUIDs and
