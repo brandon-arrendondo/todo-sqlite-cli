@@ -18,3 +18,4 @@ MQTT deployment workflow.
    architecture
    merge-engine
    incidents
+   adr/index
