@@ -275,7 +275,7 @@ to pull in both dependencies at once. Enable it by pointing
   "client_id": "coordinator-main",
   "username": "todo-sqlite-cli",
   "password_env": "TODO_MQTT_PASSWORD",
-  "topic_prefix": "todo/tools_sqc",
+  "topic_prefix": "todo/aurora-lint",
   "db_path": "/path/to/master/todo.db"
 }
 ```

@@ -11,12 +11,12 @@ makes sense in light of what it prevents.
 
 ---------------------------------------------------------------------------
 
-v2→v3 merge mass-duplicated tools_sqc's task history
------------------------------------------------------
+v2→v3 merge mass-duplicated aurora-lint's task history
+--------------------------------------------------------
 
 :Date: 2026-08-27
 :Reporter: Coding-agent session on a shared project database
-:Repo affected: ``tools_sqc``'s ``todo-sqlite-cli.db``
+:Repo affected: ``aurora-lint``'s ``todo-sqlite-cli.db``
 :Severity: High — every pre-existing task in the shared DB was duplicated
    (618 of 620 tasks affected; 1238 rows after the merge instead of 620)
 :Status: **Resolved.** ``git_merge_driver::run`` now calls
@@ -34,7 +34,7 @@ v2→v3 merge mass-duplicated tools_sqc's task history
 Summary
 ~~~~~~~
 
-``tools_sqc``'s bench node had been running against an **old v2-schema**
+``aurora-lint``'s bench node had been running against an **old v2-schema**
 local ``todo-sqlite-cli.db`` all session (no ``uuid`` column — ``id INTEGER
 PRIMARY KEY AUTOINCREMENT``). A commit landed on ``origin/main`` with a DB
 already migrated to the **v3 schema** (``uuid TEXT PRIMARY KEY``, ``id
@@ -83,10 +83,10 @@ Evidence
 
 Confirming query (same logical task, two UUIDs after merge)::
 
-    $ sqlite3 tools_sqc-mynode-pre-merge-v2schema.db "select id,title from tasks where id=1;"
+    $ sqlite3 aurora-lint-mynode-pre-merge-v2schema.db "select id,title from tasks where id=1;"
     1|MEM30-C field-level free tracking
 
-    $ sqlite3 tools_sqc-origin-pre-merge-v3schema.db "select id,uuid,title from tasks where id=1;"
+    $ sqlite3 aurora-lint-origin-pre-merge-v3schema.db "select id,uuid,title from tasks where id=1;"
     1|ce83cf74-1e5c-4f81-b1af-3d9a3e3688ae|MEM30-C field-level free tracking
 
     # After merge, doctor reports BOTH of these under id=1:
