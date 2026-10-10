@@ -40,10 +40,10 @@ requirements. Describe the correction in that entry rather than duplicating
 it under Fixed.
 
 Entries are short publication-ready explanations, not copied commit subjects
-or work-item titles. Exclude investigation work, paper and docs-only
-edits, CI and packaging chores, refactors, tests or fixtures added for their
-own sake, and dependency changes with no user-visible effect. If any of those
-ships a user-visible capability or fix, describe that effect instead.
+or work-item titles. Exclude investigation work, docs-only edits, CI and
+packaging chores, refactors, tests or fixtures added for their own sake, and
+dependency changes with no user-visible effect. If any of those ships a
+user-visible capability or fix, describe that effect instead.
 
 Do not publish internal tracking references or locate defects in another
 project that have not been fixed upstream. The changelog is part of the public

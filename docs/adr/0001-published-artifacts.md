@@ -4,10 +4,10 @@
 
 ## Context
 
-todo-sqlite-cli publishes source, documentation and release packages. Correct
-task and database behavior does not by itself make the resulting artifact ready to
-publish. Citations, licences, private working material and responsibility
-need the same review.
+todo-sqlite-cli publishes source, documentation and release packages.
+Correct task and database behavior does not by itself make the resulting
+artifact ready to publish. Citations, licences, private working material
+and responsibility need the same review.
 
 [ADR-0002](0002-changelog-is-for-users.md) proposes the user-facing
 release-note policy. This decision adds artifact-wide conditions; it does

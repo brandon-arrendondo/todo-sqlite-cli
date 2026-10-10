@@ -1,4 +1,4 @@
-# Architectural Decision Records
+# Architecture Decision Records
 
 These drafts record decisions that need review and acceptance. Proposed
 status does not make a behavioral target an implemented guarantee. Read the
