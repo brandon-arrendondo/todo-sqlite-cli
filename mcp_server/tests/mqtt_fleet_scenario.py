@@ -402,6 +402,15 @@ class Scenario:
         await coord.call("assign_task", worker_id="w1", body="poll assignment")
         await coord.call("send_message", worker_id="w1", body="poll message")
         await coord.call("broadcast", body="poll broadcast")
+        missing = str(self.workdir / "missing-attachment")
+        for tool, args in (("send_message", {"worker_id": "w1"}),
+                           ("assign_task", {"worker_id": "w1"}), ("broadcast", {})):
+            try:
+                await coord.call(tool, body="Missing attachment", file_path=missing, **args)
+                self.check(f"{tool} missing attachment returns OS error", False)
+            except ToolError as error:
+                self.check(f"{tool} missing attachment returns OS error",
+                           missing in str(error) and "No such file" in str(error), str(error))
         pending = await worker.call("edit_task", id=1, append_details="poll progress")
         await worker.call("send_message", body="poll check-in")
         seen = {key: [] for key in ("assignments", "messages", "broadcasts")}

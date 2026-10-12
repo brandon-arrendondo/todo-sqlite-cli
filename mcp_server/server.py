@@ -58,7 +58,7 @@ def _tool():
             with _tool_lock:
                 try:
                     return func(*args, **kwargs)
-                except RuntimeError as error:
+                except (RuntimeError, OSError, ValueError) as error:
                     raise ToolError(str(error)) from error
         return mcp.tool()(invoke)
     return decorator
@@ -166,7 +166,8 @@ def next_task(project_name: str | None = None) -> str:
 @_tool()
 def show_task(id: int | str) -> str:
     """Return full task details as a bare JSON object.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
     """
     return _run("show", str(id), "--format", "json")
 
@@ -183,7 +184,7 @@ def show_tasks(ids: list[int | str]) -> str:
     for reference in ids:
         try:
             tasks.append(json.loads(_run("show", str(reference), "--format", "json")))
-        except RuntimeError as error:
+        except (RuntimeError, OSError, ValueError) as error:
             errors.append({"id": reference, "error": str(error)})
     return json.dumps({"tasks": tasks, "errors": errors}, separators=(",", ":"))
 
@@ -248,9 +249,12 @@ def add_task(
     title: required summary; details: body; tags: strings; priority: 1–5
     (1 highest). depends_on: blocking IDs/UUIDs; related: mutual nonblocking
     IDs/UUIDs. start: immediately in-progress. location: work site.
-    implementation_client: optional MQTT claimant; project_name: project.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    implementation_client: optional MQTT claimant, usually left unset;
+    project_name: project.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write(
         "add",
@@ -273,8 +277,10 @@ def add_task(
 def start_task(id: int | str, force: bool = False) -> str:
     """Start a task; return updated JSON. Pauses current in-progress work
     to partial. force allows multiple in-progress tasks and bypasses dependencies.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("start", dict(id=id, force=force))
 
@@ -282,8 +288,10 @@ def start_task(id: int | str, force: bool = False) -> str:
 @_tool()
 def stop_task(id: int | str) -> str:
     """Pause an in-progress task to partial; return updated JSON.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("stop", dict(id=id))
 
@@ -291,8 +299,10 @@ def stop_task(id: int | str) -> str:
 @_tool()
 def revert_task(id: int | str) -> str:
     """Move a task to pending and clear started_at; return updated JSON.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("revert", dict(id=id))
 
@@ -301,8 +311,10 @@ def revert_task(id: int | str) -> str:
 def done_task(id: int | str, rejected: bool = False) -> str:
     """Mark done idempotently; return updated JSON. rejected marks rejected
     instead, records completed_at, and does NOT unblock dependents.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("done", dict(id=id, rejected=rejected))
 
@@ -329,15 +341,17 @@ def edit_task(
     clear_project_name: bool = False,
 ) -> str:
     """Edit supplied fields; omitted fields stay unchanged. Return updated JSON.
-    append_details adds a progress note with a newline; details REPLACES
+    Use append_details for progress notes; it appends with a newline; details REPLACES
     the entire body. clear_details removes it. add_tags/rm_tags modify tags;
     add_deps/rm_deps modify blocking links; add_related/rm_related modify
     mutual nonblocking links (no self-links). All link values accept IDs/UUIDs.
     location, implementation_client and project_name set those fields;
     their clear_* flags unset them and conflict with setting the same field.
     title and priority replace those values.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write(
         "edit",
@@ -367,8 +381,10 @@ def edit_task(
 @_tool()
 def rm_task(id: int | str) -> str:
     """Permanently delete a task and its tags/dependency edges; return {"deleted": id}.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("rm", dict(id=id))
 
@@ -378,8 +394,11 @@ def renumber_task(id: int | str, new_id: int, force: bool = False) -> str:
     """Change a display ID; return updated JSON. UUID and dependency identity
     stay unchanged. new_id must be positive. force permits an existing ID,
     creating a collision; use only for deliberate renumbering.
-    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
-    Worker mode returns a pending request_id; poll check_request for the outcome.
+    An ambiguous plain ID is rejected; pass the full UUID.
+    IDs accept display IDs or full UUIDs. Ambiguity errors list every id/uuid;
+    retry with the full UUID.
+    Worker mode submits to the coordinator; it does not write or delete locally.
+    Returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("renumber", dict(id=id, new_id=new_id, force=force))
 

@@ -35,7 +35,7 @@ MCP startup or tool availability
 --------------------------------
 
 Install the Python package with ``mcp>=2.3,<3`` and verify that the CLI is on PATH,
-or set ``TODO_SQLITE_CLI_BIN``. Standalone mode exposes 13 task tools.
+or set ``TODO_SQLITE_CLI_BIN``. Standalone mode exposes 14 task tools.
 MQTT mode adds only the tools valid for that role. MQTT write requests from a
 worker are pending requests, not confirmations that a task mutation happened;
 poll check_request for the result. Snapshot updates replace the worker replica.

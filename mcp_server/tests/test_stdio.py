@@ -62,6 +62,16 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_stdio_read_write_and_errors(self):
         await self.exercise("legacy")
 
+    async def test_missing_binary_preserves_os_error(self):
+        missing = str(Path(self.scratch.name) / "missing-binary")
+        params = self.parameters()
+        params.env["TODO_SQLITE_CLI_BIN"] = missing
+        async with Client(params) as client:
+            failed = await client.call_tool("list_tasks", {})
+            self.assertTrue(failed.is_error)
+            self.assertIn(missing, failed.content[0].text)
+            self.assertIn("No such file", failed.content[0].text)
+
     async def test_compact_list_preserves_selection_and_full_details(self):
         async with Client(self.parameters()) as client:
             details = "Long progress history. " * 100
@@ -98,6 +108,10 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(task["uuid"], failed.content[0].text)
             shown = await self.task(client, "show_task", id=second["uuid"])
             self.assertEqual(shown["title"], "Second")
+            batch = await self.task(client, "show_tasks", ids=[first["uuid"], first["id"], second["uuid"]])
+            self.assertEqual([task["title"] for task in batch["tasks"]], ["First", "Second"])
+            for task in (first, second):
+                self.assertIn(task["uuid"], batch["errors"][0]["error"])
 
     async def test_batch_details_preserve_successes_and_errors(self):
         async with Client(self.parameters()) as client:

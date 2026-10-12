@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mqtt_service import CoordinatorService, Mailbox, WorkerService
@@ -49,6 +50,35 @@ class WorkerPollTests(unittest.TestCase):
         again = json.loads(self.worker.poll_worker())
         for key in ("assignments", "messages", "broadcasts"):
             self.assertEqual(again[key], [])
+
+    def test_receipt_failure_returns_all_drained_channels(self):
+        for key in ("assignments", "messages", "broadcasts"):
+            getattr(self.worker, "_" + key).add({"message_id": key, "body": key})
+
+        def fail_receipt(client, status, channel, ids):
+            for key in ("assignments", "messages", "broadcasts"):
+                self.assertEqual(getattr(self.worker, "_" + key)._items, [])
+            raise OSError("receipt unavailable")
+
+        self.worker._publish_receipt = fail_receipt
+        result = json.loads(self.worker.poll_worker())
+        for key in ("assignments", "messages", "broadcasts"):
+            self.assertEqual(result[key][0]["body"], key)
+        self.assertIn("receipt unavailable", result["channel_errors"]["assignments"])
+        self.assertIn("receipt unavailable", result["channel_errors"]["messages"])
+
+    def test_later_drain_failure_preserves_prior_items_and_failed_queue(self):
+        self.worker._assignments.add({"message_id": "assignment", "body": "Assignment"})
+        self.worker._messages.add({"message_id": "message", "body": "Message"})
+        self.worker._broadcasts.add({"message_id": "broadcast", "body": "Broadcast"})
+        with patch.object(self.worker._messages, "_save", side_effect=OSError("disk unavailable")):
+            result = json.loads(self.worker.poll_worker())
+        self.assertEqual(result["assignments"][0]["body"], "Assignment")
+        self.assertEqual(result["broadcasts"][0]["body"], "Broadcast")
+        self.assertIn("disk unavailable", result["channel_errors"]["messages"])
+        self.assertEqual(result["messages"], [])
+        later = json.loads(self.worker.poll_worker())
+        self.assertEqual(later["messages"][0]["body"], "Message")
 
     def test_stale_empty_channels_are_errors_without_discarding_broadcasts(self):
         self.context["link"].update(stale=True, stale_since=1.0, connected=False,

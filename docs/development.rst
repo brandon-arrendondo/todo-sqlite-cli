@@ -74,3 +74,19 @@ For mixed-version MQTT scenarios whose older server needs SDK v1, pass
 ``--compat-python /path/to/v1-venv/bin/python`` alongside ``--compat-ref``.
 The selected interpreter needs the older server's dependencies, including
 paho-mqtt. The scenario driver itself runs with SDK v2.
+
+The original ``mqtt_fleet_scenario.py --compat-ref`` checks model a server from
+before fleet presence, directives and receipts. Use ``--compat-ref b5f9f96``
+with an SDK v1 ``--compat-python`` for those legacy-feature expectations.
+Refs with newer MQTT features do not satisfy those old-feature assertions.
+For SDK-only interoperability against the pre-migration code, run the committed
+mixed-SDK tests instead:
+
+.. code-block:: sh
+
+   TODO_MCP_V1_PYTHON=/path/to/v1-venv/bin/python TODO_SQLITE_CLI_BIN="$PWD/target/debug/todo-sqlite-cli" python3 -m unittest discover -s mcp_server/tests -p 'test_mixed_sdk.py' -v
+
+The driver needs SDK v2 and paho-mqtt; the SDK v1 interpreter needs ``mcp<2``
+and paho-mqtt. Missing optional prerequisites are reported as skips; check that
+all mixed-SDK tests actually ran. Package version numbers are bumped at release,
+so this migration keeps the current 4.4.0 version.

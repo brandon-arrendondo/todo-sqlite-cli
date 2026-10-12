@@ -521,7 +521,11 @@ class Mailbox:
     def drain(self) -> list[dict]:
         with self._lock:
             items, self._items = self._items, []
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                self._items = items
+                raise
             return items
 
 
@@ -1563,16 +1567,37 @@ class WorkerService(_Node):
         items = self._read_directives(mailbox, channel)
         return json.dumps(_drained_reply(key, items, self._context(), _WORKER_ADVICE))
 
+    def _poll_channels(self) -> tuple[dict, dict]:
+        """Drain every queue before receipts; preserve items when a channel fails."""
+        channels, errors = {}, {}
+        for key in ("assignments", "messages", "broadcasts"):
+            try:
+                channels[key] = getattr(self, "_" + key).drain()
+            except Exception as error:
+                channels[key] = []
+                errors[key] = f"drain failed: {error}"
+        for key, channel in (("assignments", "assignment"), ("messages", "message")):
+            items = channels[key]
+            if not items:
+                continue
+            try:
+                self._mark_superseded(items)
+                self._publish_receipt(self._client, "read", channel, [i["message_id"] for i in items])
+            except Exception as error:
+                errors[key] = f"directive marking or read receipt failed: {error}"
+        return channels, errors
+
     def poll_worker(self, request_ids: list[str] | None = None) -> str:
         """Drain all three channels and inspect requested write outcomes."""
-        channels = {"assignments": self._read_directives(self._assignments, "assignment"),
-                    "messages": self._read_directives(self._messages, "message"),
-                    "broadcasts": self._broadcasts.drain()}
+        channels, errors = self._poll_channels()
         with self._lock:
             requests = {key: dict(self._local.get(key, {"status": "unknown"}))
                         for key in request_ids or []}
         reply = _poll_reply(channels, self._context(), _WORKER_ADVICE, ("broadcasts",))
         reply["requests"] = requests
+        for key, error in errors.items():
+            prior = reply["channel_errors"].get(key)
+            reply["channel_errors"][key] = f"{prior}; {error}" if prior else error
         return json.dumps(reply, separators=(",", ":"))
 
     def latest_directive(self, task_id) -> str:
