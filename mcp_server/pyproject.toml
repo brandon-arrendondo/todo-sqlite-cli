@@ -4,10 +4,7 @@ version = "4.4.0"
 description = "MCP server wrapping todo-sqlite-cli"
 requires-python = ">=3.11"
 dependencies = [
-    # mcp 2.x renamed FastMCP to MCPServer and changed the import path this
-    # server relies on (mcp.server.fastmcp); pin to the v1 API until server.py
-    # is migrated.
-    "mcp>=1.0.0,<2",
+    "mcp>=2.3,<3",
 ]
 
 [project.optional-dependencies]

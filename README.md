@@ -205,7 +205,7 @@ Not published to PyPI — a plain `cargo install` doesn't include it, so get
 run the script in place —
 
 ```
-pip install "mcp>=1,<2"
+pip install "mcp>=2.3,<3"
 python3 /path/to/mcp_server/server.py
 ```
 
@@ -607,7 +607,7 @@ and two workers over MCP stdio through every feature above: fleet state, a
 `kill -9`'d coordinator, a broker outage, go/hold supersede, receipts,
 attachments, ACL denials, and the dead-man switch and worker fallback
 (with timers in seconds). It needs `mosquitto`, `mosquitto_passwd`,
-`mcp<2` and `paho-mqtt`, and skips cleanly (exit 0) if any is missing:
+`mcp>=2.3,<3` and `paho-mqtt`, and skips cleanly (exit 0) if any is missing:
 
 ```
 python mcp_server/tests/mqtt_fleet_scenario.py --compat-ref <older-git-ref>

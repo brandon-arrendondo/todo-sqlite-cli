@@ -47,9 +47,9 @@ def skip(reason: str) -> None:
 def find_prereqs() -> dict:
     try:
         import paho.mqtt.client  # noqa: F401
-        from mcp import ClientSession  # noqa: F401
+        from mcp import Client  # noqa: F401
     except ImportError as e:
-        skip(f"python dependency missing ({e.name}); install mcp<2 and paho-mqtt")
+        skip(f"python dependency missing ({e.name}); install mcp>=2.3,<3 and paho-mqtt")
     candidates = (os.environ.get("MOSQUITTO"), shutil.which("mosquitto"), "/usr/sbin/mosquitto")
     mosquitto = next((c for c in candidates if c and Path(c).exists()), None)
     if not mosquitto:
@@ -154,6 +154,11 @@ class ToolError(Exception):
     pass
 
 
+def prereqs_python(source_dir, prereqs):
+    """Old source may require SDK v1 in a separate Python environment."""
+    return sys.executable if source_dir == SERVER_DIR else prereqs.get("compat_python", sys.executable)
+
+
 class Node:
     """One server.py process, driven over MCP stdio from its own asyncio
     task (anyio cancel scopes must be exited by the task that entered them,
@@ -162,6 +167,7 @@ class Node:
     def __init__(self, name, source_dir: Path, config: dict, workdir: Path, prereqs):
         self.name = name
         self.source_dir = source_dir
+        self.prereqs = prereqs
         self.config_path = workdir / f"{name}.mqtt.json"
         self.config_path.write_text(json.dumps(config))
         self.config = config
@@ -177,25 +183,23 @@ class Node:
         self._task = None
 
     async def start(self) -> None:
-        from mcp import ClientSession, StdioServerParameters
+        from mcp import Client, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
         ready = asyncio.Event()
         self._stop = asyncio.Event()
         params = StdioServerParameters(
-            command=sys.executable,
+            command=prereqs_python(self.source_dir, self.prereqs),
             args=[str(self.source_dir / "server.py")],
             env=self.env,
             cwd=str(self.source_dir),
         )
 
         async def run():
-            async with stdio_client(params, errlog=self.errlog) as (r, w):
-                async with ClientSession(r, w) as session:
-                    await session.initialize()
-                    self.session = session
-                    ready.set()
-                    await self._stop.wait()
+            async with Client(stdio_client(params, errlog=self.errlog)) as session:
+                self.session = session
+                ready.set()
+                await self._stop.wait()
 
         self._task = asyncio.create_task(run())
         waiter = asyncio.create_task(ready.wait())
@@ -209,7 +213,7 @@ class Node:
     async def call(self, tool: str, **args):
         result = await asyncio.wait_for(self.session.call_tool(tool, args), timeout=30)
         text = result.content[0].text if result.content else ""
-        if result.isError:
+        if result.is_error:
             raise ToolError(text)
         try:
             return json.loads(text)
@@ -930,9 +934,12 @@ class Scenario:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--compat-ref", help="also run mixed-version checks against this git ref's server")
+    parser.add_argument("--compat-python", help="Python with dependencies for the older server")
     parser.add_argument("--keep", action="store_true", help="keep the scratch dir")
     args = parser.parse_args()
     prereqs = find_prereqs()
+    if args.compat_python:
+        prereqs["compat_python"] = args.compat_python
     workdir = Path(tempfile.mkdtemp(prefix="mqtt-fleet-scenario-"))
     print(f"scratch dir: {workdir}\ncli: {prereqs['cli']}\nmosquitto: {prereqs['mosquitto']}")
     try:

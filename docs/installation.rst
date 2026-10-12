@@ -30,7 +30,7 @@ licence records and SBOM alongside Linux/Windows binaries, and prepares Linux
 deb, rpm and AppImage packages. Check repository releases for available assets.
 The standalone manual source is ``man/todo-sqlite-cli.1``.
 
-The optional MCP wrapper needs Python 3.11 or later and ``mcp>=1,<2``. Install
+The optional MCP wrapper needs Python 3.11 or later and ``mcp>=2.3,<3``. Install
 from a source checkout or an extracted release archive:
 
 .. code-block:: sh

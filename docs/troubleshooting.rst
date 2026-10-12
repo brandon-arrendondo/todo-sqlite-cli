@@ -34,7 +34,7 @@ schemas, so they are not a side-effect-free inspection method.
 MCP startup or tool availability
 --------------------------------
 
-Install the Python package with ``mcp>=1,<2`` and verify that the CLI is on PATH,
+Install the Python package with ``mcp>=2.3,<3`` and verify that the CLI is on PATH,
 or set ``TODO_SQLITE_CLI_BIN``. Standalone mode exposes 13 task tools.
 MQTT mode adds only the tools valid for that role. MQTT write requests from a
 worker are pending requests, not confirmations that a task mutation happened;

@@ -44,7 +44,7 @@ help alone can contain stale prose. Verify MCP tool counts/parameters against
 MQTT scenario checks
 --------------------
 
-The optional scenario runner needs mosquitto, mosquitto_passwd, ``mcp<2`` and
+The optional scenario runner needs mosquitto, mosquitto_passwd, ``mcp>=2.3,<3`` and
 paho-mqtt, and uses a throwaway local broker:
 
 .. code-block:: sh
@@ -55,3 +55,22 @@ It skips with exit 0 when prerequisites are absent; a zero exit alone does not
 prove the scenario ran. ``--compat-ref <git-ref>`` adds mixed-version checks.
 Run this when changing MQTT behavior. Documentation-only changes need no live
 broker or production database access.
+
+MCP wire checks
+---------------
+
+After installing ``./mcp_server`` and building the CLI, run:
+
+.. code-block:: sh
+
+   TODO_SQLITE_CLI_BIN="$PWD/target/debug/todo-sqlite-cli" python3 -m unittest discover -s mcp_server/tests -p 'test_*.py' -v
+
+These tests use temporary databases and exercise modern and legacy stdio clients,
+including simultaneous writes and actionable CLI errors. SDK v2 dispatches sync
+handlers to threads; the wrapper serializes complete tool operations to preserve
+its mutation/read/snapshot ordering.
+
+For mixed-version MQTT scenarios whose older server needs SDK v1, pass
+``--compat-python /path/to/v1-venv/bin/python`` alongside ``--compat-ref``.
+The selected interpreter needs the older server's dependencies, including
+paho-mqtt. The scenario driver itself runs with SDK v2.

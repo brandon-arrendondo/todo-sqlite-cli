@@ -13,15 +13,18 @@ Binary resolution:
 import json
 import os
 import subprocess
+import threading
+from functools import wraps
 from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 import cli_ops
 
 BIN = os.environ.get("TODO_SQLITE_CLI_BIN", "todo-sqlite-cli")
 
-mcp = FastMCP("todo-sqlite-cli")
+mcp = MCPServer("todo-sqlite-cli")
 
 # Optional MQTT coordinator/worker sync (see README.md "MQTT sync"). Loaded
 # lazily so a standalone deployment never needs the `paho-mqtt` dependency.
@@ -41,8 +44,28 @@ if os.environ.get("TODO_SQLITE_CLI_MQTT_CONFIG"):
         )
 
 
+# SDK v2 runs synchronous handlers in worker threads. Keep tool operations
+# serialized as in v1: writes include a CLI mutation, a follow-up read, and
+# sometimes snapshot publication. MQTT background callbacks retain their own locks.
+_tool_lock = threading.Lock()
+
+
+def _tool():
+    """Register a serialized tool and preserve expected CLI/MQTT errors."""
+    def decorator(func):
+        @wraps(func)
+        def invoke(*args, **kwargs):
+            with _tool_lock:
+                try:
+                    return func(*args, **kwargs)
+                except RuntimeError as error:
+                    raise ToolError(str(error)) from error
+        return mcp.tool()(invoke)
+    return decorator
+
+
 def _mqtt_tool(*modes: str):
-    """Like @mcp.tool(), but only actually registers the tool when MQTT sync
+    """Like @_tool(), but only actually registers the tool when MQTT sync
     is configured for one of `modes` — an unregistered tool costs the agent
     nothing, whereas a registered-but-unusable one burns schema tokens on
     every request in every deployment that never uses MQTT sync at all.
@@ -50,7 +73,7 @@ def _mqtt_tool(*modes: str):
 
     def decorator(func):
         if _mqtt is not None and _mqtt_config.mode in modes:
-            return mcp.tool()(func)
+            return _tool()(func)
         return func
 
     return decorator
@@ -82,7 +105,7 @@ def _run(*args: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@_tool()
 def list_tasks(
     status: str = "active",
     tags: list[str] | None = None,
@@ -119,7 +142,7 @@ def list_tasks(
     return _run(*args)
 
 
-@mcp.tool()
+@_tool()
 def next_task(project_name: str | None = None) -> str:
     """Return the single highest-priority task to work on next as JSON.
 
@@ -136,7 +159,7 @@ def next_task(project_name: str | None = None) -> str:
     return _run(*args)
 
 
-@mcp.tool()
+@_tool()
 def show_task(id: int | str) -> str:
     """Show full details for a task as JSON (bare task object).
 
@@ -146,7 +169,7 @@ def show_task(id: int | str) -> str:
     return _run("show", str(id), "--format", "json")
 
 
-@mcp.tool()
+@_tool()
 def export_todo() -> str:
     """Export all active (in-progress + partial + pending) tasks as JSON.
 
@@ -156,7 +179,7 @@ def export_todo() -> str:
     return _run("export-todo", "--format", "json")
 
 
-@mcp.tool()
+@_tool()
 def export_completed(
     since: str | None = None,
     until: str | None = None,
@@ -195,7 +218,7 @@ def _dispatch_write(op: str, args: dict) -> str:
     return result
 
 
-@mcp.tool()
+@_tool()
 def add_task(
     title: str,
     details: str | None = None,
@@ -253,7 +276,7 @@ def add_task(
     )
 
 
-@mcp.tool()
+@_tool()
 def start_task(id: int | str, force: bool = False) -> str:
     """Move a task to in-progress. Returns the updated task as JSON.
 
@@ -272,7 +295,7 @@ def start_task(id: int | str, force: bool = False) -> str:
     return _dispatch_write("start", dict(id=id, force=force))
 
 
-@mcp.tool()
+@_tool()
 def stop_task(id: int | str) -> str:
     """Pause an in-progress task (moves to 'partial'). Returns updated task as JSON.
 
@@ -288,7 +311,7 @@ def stop_task(id: int | str) -> str:
     return _dispatch_write("stop", dict(id=id))
 
 
-@mcp.tool()
+@_tool()
 def revert_task(id: int | str) -> str:
     """Move a task back to pending, clearing started_at. Returns updated task as JSON.
 
@@ -304,7 +327,7 @@ def revert_task(id: int | str) -> str:
     return _dispatch_write("revert", dict(id=id))
 
 
-@mcp.tool()
+@_tool()
 def done_task(id: int | str, rejected: bool = False) -> str:
     """Mark a task done. Idempotent. Returns the updated task as JSON.
 
@@ -323,7 +346,7 @@ def done_task(id: int | str, rejected: bool = False) -> str:
     return _dispatch_write("done", dict(id=id, rejected=rejected))
 
 
-@mcp.tool()
+@_tool()
 def edit_task(
     id: int | str,
     title: str | None = None,
@@ -400,7 +423,7 @@ def edit_task(
     )
 
 
-@mcp.tool()
+@_tool()
 def rm_task(id: int | str) -> str:
     """Delete a task permanently. Cascades to tags and dependency edges.
 
@@ -418,7 +441,7 @@ def rm_task(id: int | str) -> str:
     return _dispatch_write("rm", dict(id=id))
 
 
-@mcp.tool()
+@_tool()
 def renumber_task(id: int | str, new_id: int, force: bool = False) -> str:
     """Reassign a task's display id. Returns the updated task as JSON.
 
