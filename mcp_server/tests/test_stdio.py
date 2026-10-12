@@ -62,6 +62,43 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_stdio_read_write_and_errors(self):
         await self.exercise("legacy")
 
+    async def test_compact_list_preserves_selection_and_full_details(self):
+        async with Client(self.parameters()) as client:
+            details = "Long progress history. " * 100
+            added = await self.task(client, "add_task", title="Compact task", details=details,
+                                    tags=["review"], project_name="example", location="desk")
+            await self.task(client, "add_task", title="Other task", project_name="other")
+            arguments = {"project_name": "example", "tags": ["review"], "limit": 1}
+            full = await self.task(client, "list_tasks", **arguments)
+            explicit_full = await self.task(client, "list_tasks", compact=False, **arguments)
+            self.assertEqual(full, explicit_full)
+            compact = await self.task(client, "list_tasks", compact=True, **arguments)
+            self.assertEqual(len(compact["tasks"]), 1)
+            summary = compact["tasks"][0]
+            self.assertNotIn("details", summary)
+            self.assertNotIn("created_at", summary)
+            for key, value in summary.items():
+                self.assertEqual(value, full["tasks"][0][key])
+            for key in ("uuid", "id", "project_name", "blocked", "depends_on", "is_gate",
+                        "location", "implementation_client", "tags"):
+                self.assertIn(key, summary)
+            shown = await self.task(client, "show_task", id=added["uuid"])
+            self.assertEqual(shown["details"], details)
+            empty = await self.task(client, "list_tasks", compact=True, project_name="missing")
+            self.assertEqual(empty, {"tasks": []})
+
+    async def test_ambiguous_id_error_preserves_uuid_choices(self):
+        async with Client(self.parameters()) as client:
+            first = await self.task(client, "add_task", title="First", project_name="one")
+            second = await self.task(client, "add_task", title="Second", project_name="two")
+            await self.task(client, "renumber_task", id=second["uuid"], new_id=first["id"], force=True)
+            failed = await client.call_tool("show_task", {"id": first["id"]})
+            self.assertTrue(failed.is_error)
+            for task in (first, second):
+                self.assertIn(task["uuid"], failed.content[0].text)
+            shown = await self.task(client, "show_task", id=second["uuid"])
+            self.assertEqual(shown["title"], "Second")
+
     async def test_simultaneous_adds_return_their_own_tasks(self):
         async with Client(self.parameters()) as client:
             tasks = await asyncio.gather(*(self.task(client, "add_task", title=f"Task {n}")

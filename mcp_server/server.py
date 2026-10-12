@@ -113,20 +113,16 @@ def list_tasks(
     limit: int | None = None,
     since: str | None = None,
     unblocked: bool = False,
+    compact: bool = False,
 ) -> str:
-    """List tasks as JSON.
+    """List tasks as {"tasks": [...]} JSON. Prefer next_task to choose one task.
 
-    status: pending | partial | in-progress | done | rejected | active | all
-    tags: filter to tasks carrying ALL listed tags
-    project_name: filter to tasks in this project (exact match)
-    limit: cap number of rows
-    since: only tasks with created_at >= DATE (YYYY-MM-DD or RFC3339)
-    unblocked: only include tasks with no unmet dependencies
-
-    Returns {"tasks": [...]} JSON. Each task carries both "id" (display —
-    unique per-project only, so two tasks can share one on a coordinator db
-    spanning several projects) and "uuid" (always unique); pass either to
-    show_task/edit_task/etc, preferring uuid whenever id might collide.
+    status: pending | partial | in-progress | done | rejected | active | all.
+    tags: require ALL tags; project_name: exact project; limit: cap rows.
+    since: created_at >= date (YYYY-MM-DD or RFC3339).
+    unblocked: exclude tasks with unmet dependencies.
+    compact: omit details and timestamps; fetch full data with show_task.
+    Each task includes id, uuid and project_name; use uuid if IDs collide.
     """
     args = ["list", "--status", status, "--format", "json"]
     for tag in tags or []:
@@ -139,19 +135,27 @@ def list_tasks(
         args += ["--since", since]
     if unblocked:
         args += ["--unblocked"]
-    return _run(*args)
+    result = _run(*args)
+    if not compact:
+        return result
+    listing = json.loads(result)
+    listing["tasks"] = [_compact_task(task) for task in listing["tasks"]]
+    return json.dumps(listing, separators=(",", ":"), ensure_ascii=False)
+
+
+def _compact_task(task: dict) -> dict:
+    """Keep selection, identity and ownership fields without the task body."""
+    fields = ("id", "uuid", "title", "status", "priority", "project_name", "tags",
+              "blocked", "depends_on", "is_gate", "location", "implementation_client")
+    return {key: task[key] for key in fields if key in task}
 
 
 @_tool()
 def next_task(project_name: str | None = None) -> str:
-    """Return the single highest-priority task to work on next as JSON.
-
-    Order: oldest in-progress → oldest unblocked partial → highest-priority
-    unblocked pending. Returns a bare task object, or empty string if none.
-
-    project_name: scope to just this project (exact match) — pass yours on
-        a coordinator db spanning several projects, or it may hand back
-        another project's task if it outranks everything in your own.
+    """Return one task as JSON, or empty string if none: oldest in-progress,
+    then oldest unblocked partial, then highest-priority unblocked pending.
+    project_name: exact project; set it on a multi-project coordinator DB
+    to avoid selecting another project's work.
     """
     args = ["next", "--json"]
     if project_name:
@@ -161,20 +165,16 @@ def next_task(project_name: str | None = None) -> str:
 
 @_tool()
 def show_task(id: int | str) -> str:
-    """Show full details for a task as JSON (bare task object).
-
-    id: display id, or the full uuid (required if the display id is
-        ambiguous — see the note on start_task/edit_task/etc).
+    """Return full task details as a bare JSON object.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
     """
     return _run("show", str(id), "--format", "json")
 
 
 @_tool()
 def export_todo() -> str:
-    """Export all active (in-progress + partial + pending) tasks as JSON.
-
-    Returns {"tasks": [...]} JSON. Equivalent to list_tasks but always
-    covers all active statuses with no filters.
+    """Export ALL active tasks (in-progress, partial, pending) as {"tasks": [...]}.
+    Use filtered list_tasks or next_task for smaller responses.
     """
     return _run("export-todo", "--format", "json")
 
@@ -184,13 +184,9 @@ def export_completed(
     since: str | None = None,
     until: str | None = None,
 ) -> str:
-    """Export completed tasks grouped by date as JSON.
-
-    since: inclusive lower bound on completed_at (YYYY-MM-DD or RFC3339)
-    until: exclusive upper bound on completed_at (YYYY-MM-DD or RFC3339)
-
-    Returns {"completed": [{"date": "YYYY-MM-DD", "tasks": [...]}, ...]}
-    descending by date.
+    """Export completed tasks as {"completed": [{"date": ..., "tasks": [...]}, ...]},
+    newest dates first. since: inclusive completed_at lower bound; until:
+    exclusive upper bound. Dates accept YYYY-MM-DD or RFC3339.
     """
     args = ["export-completed", "--format", "json"]
     if since:
@@ -231,33 +227,13 @@ def add_task(
     implementation_client: str | None = None,
     project_name: str | None = None,
 ) -> str:
-    """Add a new task. Returns the new task as JSON.
-
-    title: short summary (required)
-    details: longer free-form description
-    tags: list of tag strings
-    priority: 1 (highest) to 5 (lowest), default 3
-    depends_on: list of task IDs (or full uuids — see id note below) this
-        task is blocked by
-    start: immediately move to in-progress
-    location: where this work must be done (e.g. a specific node/site)
-    related: list of task IDs (or full uuids) to link as related work
-        (mutual — also shows up on those tasks). Not blocking, unlike
-        depends_on.
-    implementation_client: MQTT client id claiming this task (optional
-        coordinator/worker sync feature) — usually left unset.
-    project_name: which project this task belongs to, for a coordinator db
-        spanning several projects.
-
-    A display id is only unique per-project; a coordinator db spanning
-    several projects (or a merge) can legitimately have two tasks sharing
-    one. Every returned task JSON carries both "id" (display) and "uuid"
-    (always unique) plus "project_name" — if a plain id turns out
-    ambiguous, the call fails with every match's id/uuid/status/title and
-    you should retry with the full uuid instead of the display id.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Create a task; return its JSON, including id, uuid and project_name.
+    title: required summary; details: body; tags: strings; priority: 1–5
+    (1 highest). depends_on: blocking IDs/UUIDs; related: mutual nonblocking
+    IDs/UUIDs. start: immediately in-progress. location: work site.
+    implementation_client: optional MQTT claimant; project_name: project.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write(
         "add",
@@ -278,70 +254,38 @@ def add_task(
 
 @_tool()
 def start_task(id: int | str, force: bool = False) -> str:
-    """Move a task to in-progress. Returns the updated task as JSON.
-
-    Automatically pauses any current in-progress task to 'partial'.
-    force: allow multiple in-progress tasks and skip dependency check.
-
-    id may be a display id or a full uuid. Display ids are only unique
-    per-project -- on a coordinator db spanning several projects (or after
-    a merge) two tasks can share one, in which case this call fails
-    listing every match's id/uuid/status/title; retry with the full uuid
-    (also returned as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Start a task; return updated JSON. Pauses current in-progress work
+    to partial. force allows multiple in-progress tasks and bypasses dependencies.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("start", dict(id=id, force=force))
 
 
 @_tool()
 def stop_task(id: int | str) -> str:
-    """Pause an in-progress task (moves to 'partial'). Returns updated task as JSON.
-
-    id may be a display id or a full uuid. Display ids are only unique
-    per-project -- on a coordinator db spanning several projects (or after
-    a merge) two tasks can share one, in which case this call fails
-    listing every match's id/uuid/status/title; retry with the full uuid
-    (also returned as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Pause an in-progress task to partial; return updated JSON.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("stop", dict(id=id))
 
 
 @_tool()
 def revert_task(id: int | str) -> str:
-    """Move a task back to pending, clearing started_at. Returns updated task as JSON.
-
-    id may be a display id or a full uuid. Display ids are only unique
-    per-project -- on a coordinator db spanning several projects (or after
-    a merge) two tasks can share one, in which case this call fails
-    listing every match's id/uuid/status/title; retry with the full uuid
-    (also returned as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Move a task to pending and clear started_at; return updated JSON.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("revert", dict(id=id))
 
 
 @_tool()
 def done_task(id: int | str, rejected: bool = False) -> str:
-    """Mark a task done. Idempotent. Returns the updated task as JSON.
-
-    rejected: close the task as 'rejected' (declined / won't-do) instead of
-        'done'. Records completed_at but does NOT unblock dependents.
-
-    id may be a display id or a full uuid. Display ids are only unique
-    per-project -- on a coordinator db spanning several projects (or after
-    a merge) two tasks can share one, in which case this call fails
-    listing every match's id/uuid/status/title; retry with the full uuid
-    (also returned as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Mark done idempotently; return updated JSON. rejected marks rejected
+    instead, records completed_at, and does NOT unblock dependents.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("done", dict(id=id, rejected=rejected))
 
@@ -367,36 +311,16 @@ def edit_task(
     project_name: str | None = None,
     clear_project_name: bool = False,
 ) -> str:
-    """Edit an existing task. Returns the updated task as JSON.
-
-    Provide one or more fields to change; omitted fields are left as-is.
-
-    For progress notes, use append_details — it adds text to the existing
-    body with a newline separator, preserving prior context. Use details
-    only when you actually want to REPLACE the entire body (it discards
-    whatever was there before).
-
-    location/clear_location: where the work must be done, or unset it
-        (mutually exclusive).
-    add_deps/rm_deps: add/remove dependency links by task ID (or uuid).
-    add_related/rm_related: link/unlink related work by task ID (or uuid).
-        Mutual — also updates the other task; rejects linking a task to
-        itself.
-    implementation_client/clear_implementation_client: MQTT client id
-        claiming this task (optional coordinator/worker sync feature),
-        or unset it (mutually exclusive).
-    project_name/clear_project_name: which project this task belongs to,
-        or unset it (mutually exclusive).
-
-    id (and every id in add_deps/rm_deps/add_related/rm_related) may be a
-    display id or a full uuid. Display ids are only unique per-project --
-    on a coordinator db spanning several projects (or after a merge) two
-    tasks can share one, in which case this call fails listing every
-    match's id/uuid/status/title; retry with the full uuid (also returned
-    as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Edit supplied fields; omitted fields stay unchanged. Return updated JSON.
+    append_details adds a progress note with a newline; details REPLACES
+    the entire body. clear_details removes it. add_tags/rm_tags modify tags;
+    add_deps/rm_deps modify blocking links; add_related/rm_related modify
+    mutual nonblocking links (no self-links). All link values accept IDs/UUIDs.
+    location, implementation_client and project_name set those fields;
+    their clear_* flags unset them and conflict with setting the same field.
+    title and priority replace those values.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write(
         "edit",
@@ -425,42 +349,20 @@ def edit_task(
 
 @_tool()
 def rm_task(id: int | str) -> str:
-    """Delete a task permanently. Cascades to tags and dependency edges.
-
-    Returns a confirmation message with the deleted task ID.
-
-    id may be a display id or a full uuid. Display ids are only unique
-    per-project -- on a coordinator db spanning several projects (or after
-    a merge) two tasks can share one, in which case this call fails
-    listing every match's id/uuid/status/title; retry with the full uuid
-    (also returned as "uuid" on every task JSON) to disambiguate.
-
-    In worker mode, submits to the coordinator instead of deleting locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Permanently delete a task and its tags/dependency edges; return {"deleted": id}.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("rm", dict(id=id))
 
 
 @_tool()
 def renumber_task(id: int | str, new_id: int, force: bool = False) -> str:
-    """Reassign a task's display id. Returns the updated task as JSON.
-
-    This is the fix for a duplicate display id — the collision a
-    coordinator db spanning several projects (or a merge) can leave
-    behind. Identity (the uuid) is unchanged and dependency edges are
-    stored by uuid internally, so dependents keep resolving correctly.
-
-    id: the task to renumber, as a display id or full uuid. A plain id
-        that matches more than one task — the exact conflict this tool
-        exists to resolve — is rejected as ambiguous; pass the uuid from
-        that error (or from list_tasks/show_task) to pick one.
-    new_id: the new display id to assign (must be a positive integer).
-    force: allow assigning a display id already in use by another task,
-        leaving both sharing it — usually only useful mid-way through
-        renumbering several colliding tasks, not as an end state.
-
-    In worker mode, submits to the coordinator instead of writing locally —
-    returns {"request_id": ..., "status": "pending"}; poll check_request(id).
+    """Change a display ID; return updated JSON. UUID and dependency identity
+    stay unchanged. new_id must be positive. force permits an existing ID,
+    creating a collision; use only for deliberate renumbering.
+    IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
+    Worker mode returns a pending request_id; poll check_request for the outcome.
     """
     return _dispatch_write("renumber", dict(id=id, new_id=new_id, force=force))
 

@@ -384,6 +384,12 @@ class Scenario:
         self.check("worker sees coordinator online, link fresh", bool(fs), json.dumps(fs and fs["coordinator"]))
         self.check("missing retained fleet state means active", fs and fs["fleet_state"]["state"] == "active"
                    and fs["fleet_state"]["source"] == "default", json.dumps(fs and fs["fleet_state"]))
+        for node in (coord, w1):
+            full = (await node.call("list_tasks", limit=1))["tasks"]
+            compact = (await node.call("list_tasks", limit=1, compact=True))["tasks"]
+            self.check(f"{node.name} compact list preserves replica identity and selection",
+                       len(compact) == len(full) == 1 and "details" not in compact[0]
+                       and all(full[0][key] == value for key, value in compact[0].items()))
         workers = await self.until(lambda: self._when(coord.call("list_workers"), lambda r: len(r["workers"]) >= 2))
         self.check("list_workers has age_s and link", workers and all("age_s" in w for w in workers["workers"])
                    and "link" in workers, json.dumps(workers))

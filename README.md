@@ -216,6 +216,13 @@ a `todo-mcp-server` command on `PATH`:
 pip install /path/to/mcp_server
 ```
 
+For small responses, prefer `next_task(project_name=...)` when selecting work.
+Use `list_tasks(compact=True, limit=..., project_name=...)` for a shortlist:
+compact rows retain identity, title, status, priority, project, tags, blocking,
+gate and ownership fields while omitting details and timestamps. Fetch the body
+with `show_task(uuid)` when needed. Full rows remain the default; exports still
+return all requested data. Tool names and existing arguments are preserved.
+
 **Example MCP client configuration** (adapt the file location and outer structure to your client):
 
 ```json
