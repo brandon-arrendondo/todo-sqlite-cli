@@ -72,6 +72,22 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(missing, failed.content[0].text)
             self.assertIn("No such file", failed.content[0].text)
 
+    async def test_unexpected_value_error_is_sanitized(self):
+        script = Path(self.scratch.name) / "fault_server.py"
+        script.write_text(
+            f"import sys\nsys.path.insert(0, {str(SERVER.parent)!r})\n"
+            "import server\n"
+            'server._run = lambda *args: int("unexpected conversion details")\n'
+            "server.main()\n"
+        )
+        params = self.parameters()
+        params.args = [str(script)]
+        async with Client(params) as client:
+            failed = await client.call_tool("show_task", {"id": "task"})
+            self.assertTrue(failed.is_error)
+            self.assertEqual(failed.content[0].text, "Error executing tool show_task")
+            self.assertNotIn("unexpected conversion details", failed.content[0].text)
+
     async def test_compact_list_preserves_selection_and_full_details(self):
         async with Client(self.parameters()) as client:
             details = "Long progress history. " * 100
