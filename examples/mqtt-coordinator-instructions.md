@@ -83,3 +83,17 @@ thing blocking a worker's task list from moving forward.
   `"offline"` on its own. `work_state` is whatever the worker last reported
   via `report_state()` (e.g. idle/busy/blocked) — null if it never has.
   Check this before assuming a worker will act on something you send it.
+
+**Planning and one-call polling:**
+
+- Review the complete active inventory with `list_tasks(compact=True)` without
+  a limit; priority, project, gates, blocking and ownership remain visible.
+  Read full candidate bodies with `show_tasks(ids=[...])` (up to 50 at a time),
+  inspecting per-reference errors. No priorities or task bodies are summarized
+  automatically. Use UUIDs across projects.
+- `poll_coordinator()` combines incoming messages, pending write requests,
+  worker presence and shared fleet/link/dead-man context. Inspect
+  `channel_errors` and link health; an errored empty mailbox is inconclusive.
+  Pending requests still require explicit review and approve/reject calls.
+- Use the combined poll or the individual checks per tick; both drain the same
+  message queue. Any external git relay check is still a separate action.

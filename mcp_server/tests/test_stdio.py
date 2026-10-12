@@ -38,7 +38,7 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
 
     async def exercise(self, mode):
         async with Client(self.parameters(), mode=mode) as client:
-            self.assertEqual(len((await client.list_tools()).tools), 13)
+            self.assertEqual(len((await client.list_tools()).tools), 14)
             added = await self.task(client, "add_task", title="Wire task", details="Original")
             uuid = added["uuid"]
             edited = await self.task(client, "edit_task", id=uuid, append_details="Progress")
@@ -98,6 +98,18 @@ class StdioTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(task["uuid"], failed.content[0].text)
             shown = await self.task(client, "show_task", id=second["uuid"])
             self.assertEqual(shown["title"], "Second")
+
+    async def test_batch_details_preserve_successes_and_errors(self):
+        async with Client(self.parameters()) as client:
+            task = await self.task(client, "add_task", title="Plan candidate", details="Full body")
+            batch = await self.task(client, "show_tasks", ids=[task["uuid"], "missing-task"])
+            self.assertEqual(batch["tasks"][0]["details"], "Full body")
+            self.assertEqual(batch["errors"][0]["id"], "missing-task")
+            self.assertTrue(batch["errors"][0]["error"])
+            over_limit = await client.call_tool("show_tasks", {"ids": [task["uuid"]] * 51})
+            self.assertTrue(over_limit.is_error)
+            empty = await self.task(client, "show_tasks", ids=[])
+            self.assertEqual(empty, {"tasks": [], "errors": []})
 
     async def test_simultaneous_adds_return_their_own_tasks(self):
         async with Client(self.parameters()) as client:

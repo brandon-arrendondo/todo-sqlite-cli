@@ -464,6 +464,19 @@ def _drained_reply(key: str, items: list, context: dict, advice: str, *, raise_i
     return reply
 
 
+def _poll_reply(channels: dict, context: dict, advice: str, optional: tuple = ()) -> dict:
+    """Keep every drained item and channel error, sharing health context once."""
+    reply = {**channels, **context, "channel_errors": {}}
+    for key, items in channels.items():
+        try:
+            _drained_reply(key, items, context, advice, raise_if_empty=key not in optional)
+        except RuntimeError as error:
+            reply["channel_errors"][key] = str(error)
+    if context["link"]["stale"]:
+        reply["link_stale_since"] = context["link"]["stale_since"]
+    return reply
+
+
 _DEDUP_WINDOW = 500
 
 
@@ -1037,6 +1050,17 @@ class CoordinatorService(_Node):
         context = {"fleet_state": _fleet_state_view(self._fleet_state), "link": self._link.status()}
         return json.dumps(_drained_reply("messages", self._inbox.drain(), context, _COORDINATOR_ADVICE))
 
+    def poll_coordinator(self) -> str:
+        """Drain messages and inspect pending requests/presence without applying edits."""
+        workers = json.loads(self.list_workers())
+        channels = {"messages": self._inbox.drain()}
+        context = {"fleet_state": _fleet_state_view(self._fleet_state),
+                   "link": self._link.status()}
+        reply = _poll_reply(channels, context, _COORDINATOR_ADVICE)
+        reply.update({"pending": json.loads(self.list_pending())["pending"],
+                      "workers": workers["workers"], "deadman": workers["deadman"]})
+        return json.dumps(reply, separators=(",", ":"))
+
     def assign(
         self,
         worker_id: str,
@@ -1528,12 +1552,28 @@ class WorkerService(_Node):
                     and current["seq"] > item["seq"]
                 )
 
-    def _drain_directives(self, mailbox: Mailbox, key: str, channel: str) -> str:
+    def _read_directives(self, mailbox: Mailbox, channel: str) -> list:
         items = mailbox.drain()
         self._mark_superseded(items)
         if items:
             self._publish_receipt(self._client, "read", channel, [i["message_id"] for i in items])
+        return items
+
+    def _drain_directives(self, mailbox: Mailbox, key: str, channel: str) -> str:
+        items = self._read_directives(mailbox, channel)
         return json.dumps(_drained_reply(key, items, self._context(), _WORKER_ADVICE))
+
+    def poll_worker(self, request_ids: list[str] | None = None) -> str:
+        """Drain all three channels and inspect requested write outcomes."""
+        channels = {"assignments": self._read_directives(self._assignments, "assignment"),
+                    "messages": self._read_directives(self._messages, "message"),
+                    "broadcasts": self._broadcasts.drain()}
+        with self._lock:
+            requests = {key: dict(self._local.get(key, {"status": "unknown"}))
+                        for key in request_ids or []}
+        reply = _poll_reply(channels, self._context(), _WORKER_ADVICE, ("broadcasts",))
+        reply["requests"] = requests
+        return json.dumps(reply, separators=(",", ":"))
 
     def latest_directive(self, task_id) -> str:
         """The effective (newest approve/hold/go) directive for one task,

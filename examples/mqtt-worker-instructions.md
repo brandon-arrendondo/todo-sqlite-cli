@@ -77,3 +77,19 @@ uncleanly. No tool call needed on your end for either.
 convention the fleet agrees on) whenever it changes; it republishes
 immediately rather than waiting for the next heartbeat, so the coordinator
 sees it right away via `list_workers()`.
+
+**Assignment-driven work and one-call polling:**
+
+- Come online idle, send a check-in, and wait for a coordinator assignment
+  before starting work. An available task or active fleet state alone is not
+  an assignment. Read the assigned task's full body before implementing it.
+- `poll_worker(request_ids=[...])` drains assignments, direct messages and
+  broadcasts and checks each outstanding write request in one call. It shares
+  fleet_state, coordinator and link context once. Inspect every channel and
+  request result, `channel_errors`, link health, fleet instructions and
+  superseded flags. An errored empty channel is inconclusive; received items
+  from other channels remain visible. Receipts are preserved.
+- Use the combined poll or individual checks per tick; they drain the same
+  queues. Keep the fleet's prescribed idle polling cadence. Report state
+  changes explicitly with `report_state`; the combined poll schedules nothing
+  and claims no task. Keep `latest_directive` checks before irreversible steps.

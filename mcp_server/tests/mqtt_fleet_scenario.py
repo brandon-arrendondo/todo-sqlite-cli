@@ -352,6 +352,7 @@ class Scenario:
             t1, t2 = t1.get("task", t1), t2.get("task", t2)
             await self.until(lambda: self._when(w1.call("list_tasks"), lambda r: len(r["tasks"]) == 2))
             await self.startup(coord, w1, w2)
+            await self.workflow_polling(coord, w1)
             await self.fleet_state(coord, w1)
             await self.directives(coord, w1, t1, t2)
             await self.receipts(coord, w1, w2)
@@ -395,6 +396,46 @@ class Scenario:
                    and "link" in workers, json.dumps(workers))
         self.check("dead-man is off unless deadman_drain_after_s is set", workers and workers["deadman"]["enabled"] is False
                    and workers["deadman"]["drains_at"] is None and workers["deadman"]["pauses_at"] is None)
+
+    async def workflow_polling(self, coord, worker):
+        print("\n== combined workflow polls")
+        await coord.call("assign_task", worker_id="w1", body="poll assignment")
+        await coord.call("send_message", worker_id="w1", body="poll message")
+        await coord.call("broadcast", body="poll broadcast")
+        pending = await worker.call("edit_task", id=1, append_details="poll progress")
+        await worker.call("send_message", body="poll check-in")
+        seen = {key: [] for key in ("assignments", "messages", "broadcasts")}
+
+        async def drain_all():
+            result = await worker.call("poll_worker", request_ids=[pending["request_id"]])
+            for key in seen:
+                seen[key] += result[key]
+            return all(seen.values())
+
+        got = await self.until(drain_all)
+        self.check("worker poll reads all three channels", bool(got))
+        self.check("worker poll preserves assignment/message bodies",
+                   seen["assignments"][0]["body"] == "poll assignment"
+                   and seen["messages"][0]["body"] == "poll message")
+        coord_seen = []
+
+        async def coordinator_poll():
+            result = await coord.call("poll_coordinator")
+            coord_seen.extend(result["messages"])
+            return result if result["pending"] else None
+
+        result = await self.until(coordinator_poll)
+        self.check("coordinator poll includes requests, workers and health",
+                   bool(result) and result["workers"] and "fleet_state" in result
+                   and not result["channel_errors"])
+        self.check("coordinator poll drains worker message", any(m["body"] == "poll check-in" for m in coord_seen))
+        await coord.call("approve_request", request_id=pending["request_id"])
+        approved = await self.until(lambda: self._when(
+            worker.call("poll_worker", request_ids=[pending["request_id"]]),
+            lambda r: r["requests"][pending["request_id"]]["status"] == "approved"))
+        self.check("worker poll includes approved request outcome", bool(approved))
+        empty = await worker.call("poll_worker")
+        self.check("worker poll drains each channel once", all(not empty[k] for k in seen))
 
     @staticmethod
     async def _when(coro, pred):

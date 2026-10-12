@@ -115,7 +115,7 @@ def list_tasks(
     unblocked: bool = False,
     compact: bool = False,
 ) -> str:
-    """List tasks as {"tasks": [...]} JSON. Prefer next_task to choose one task.
+    """List task inventory as {"tasks": [...]} JSON; omit limit for all matching tasks.
 
     status: pending | partial | in-progress | done | rejected | active | all.
     tags: require ALL tags; project_name: exact project; limit: cap rows.
@@ -169,6 +169,23 @@ def show_task(id: int | str) -> str:
     IDs accept display IDs or full UUIDs; colliding display IDs require UUIDs.
     """
     return _run("show", str(id), "--format", "json")
+
+
+@_tool()
+def show_tasks(ids: list[int | str]) -> str:
+    """Read full task bodies for planning in one call (up to 50 IDs/UUIDs).
+    Prefer UUIDs when display IDs collide. Returns tasks in input order and
+    per-reference errors; successful reads survive another reference failing.
+    """
+    if len(ids) > 50:
+        raise RuntimeError("show_tasks accepts at most 50 references; split the request")
+    tasks, errors = [], []
+    for reference in ids:
+        try:
+            tasks.append(json.loads(_run("show", str(reference), "--format", "json")))
+        except RuntimeError as error:
+            errors.append({"id": reference, "error": str(error)})
+    return json.dumps({"tasks": tasks, "errors": errors}, separators=(",", ":"))
 
 
 @_tool()
@@ -370,6 +387,29 @@ def renumber_task(id: int | str, new_id: int, force: bool = False) -> str:
 # ---------------------------------------------------------------------------
 # Optional MQTT coordinator/worker sync commands
 # ---------------------------------------------------------------------------
+
+
+@_mqtt_tool("coordinator")
+def poll_coordinator() -> str:
+    """One fleet poll: drain messages; list pending write requests and workers.
+    Returns messages, pending, workers, deadman, fleet_state, link and
+    channel_errors. Errors invalidate empty channels; inspect link health.
+    Pending requests are not approved or rejected. Git relay checks remain separate.
+    """
+    return _mqtt.poll_coordinator()
+
+
+@_mqtt_tool("worker")
+def poll_worker(request_ids: list[str] | None = None) -> str:
+    """Drain assignments, direct messages and broadcasts; check supplied request_ids.
+    Returns all three arrays, requests keyed by ID, shared fleet_state/coordinator/
+    link and channel_errors. Inspect errors and health before trusting silence;
+    items remain visible even if another channel errors. Drains consume messages
+    and preserve read receipts and superseded flags. This grants no assignment:
+    wait for the coordinator, read full task details, and keep latest_directive
+    checks before irreversible steps. report_state remains explicit.
+    """
+    return _mqtt.poll_worker(request_ids)
 
 
 @_mqtt_tool("coordinator")

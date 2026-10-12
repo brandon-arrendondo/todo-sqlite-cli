@@ -193,7 +193,7 @@ schema versions while leaving incompatible identity histories. See the
 ## MCP server (optional)
 
 An optional Python MCP server in [`mcp_server/`](mcp_server/) wraps the
-binary as 13 tool calls (`list_tasks`, `add_task`, `start_task`, etc.) for
+binary as 14 tool calls (`list_tasks`, `add_task`, `start_task`, etc.) for
 agents that use MCP rather than shell commands. It delegates all storage and
 logic to the Rust binary — no second database, no duplicate code.
 
@@ -216,7 +216,10 @@ a `todo-mcp-server` command on `PATH`:
 pip install /path/to/mcp_server
 ```
 
-For small responses, prefer `next_task(project_name=...)` when selecting work.
+For standalone task selection, use `next_task(project_name=...)`. Coordinators
+can review the entire active inventory with `list_tasks(compact=True)` (no
+`limit`), then fetch full candidate bodies with `show_tasks(ids=[...])` or
+`show_task(uuid)`. Priority and blocking fields remain visible in the inventory.
 Use `list_tasks(compact=True, limit=..., project_name=...)` for a shortlist:
 compact rows retain identity, title, status, priority, project, tags, blocking,
 gate and ownership fields while omitting details and timestamps. Fetch the body
@@ -243,6 +246,20 @@ return all requested data. Tool names and existing arguments are preserved.
   marker, so you can also just run the server from the project root.
 - `TODO_SQLITE_CLI_BIN` — path to the binary (default: `todo-sqlite-cli` on
   `PATH`).
+
+Fleet polling can use `poll_coordinator()` for messages, pending requests and
+worker presence, or `poll_worker(request_ids=[...])` for assignments, direct
+messages, broadcasts and outstanding request outcomes. Each reply carries health
+context once. Check `channel_errors`, link health and fleet instructions every
+time; an errored empty channel means the poll is inconclusive. Nonempty channels
+are returned even when another channel errors. Polling consumes the same queues
+as individual checks; use either approach per tick. The individual tools remain
+available. Coordinator git relay checks remain separate.
+
+Workers wait for a coordinator assignment before taking work, read its full body,
+and explicitly report state changes. A poll does not claim a task or authorize
+an action; keep `latest_directive` checks before irreversible steps. Polling
+cadence belongs to the session playbook; these tools schedule no wakeups.
 
 ## MQTT sync (optional, coordinator/worker)
 
@@ -339,14 +356,14 @@ check its link. Every reply then reports `link.error` ("subscription to …
 denied by broker ACL"), and an empty drain raises that error rather than
 a stale-link loop.
 
-Twenty more MCP tools exist for MQTT sync, but each is only registered on
+Twenty-two more MCP tools exist for MQTT sync, but each is only registered on
 a node whose configured mode it's valid for — a standalone deployment (no
 MQTT config) sees none of them, a coordinator sees only the coordinator (and
 shared) ones, a worker only the worker (and shared) ones. This keeps a
 node's tool list free of entries that would just error if called:
-`list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
+`poll_coordinator`, `list_pending_requests`, `approve_request`, `reject_request`, `list_workers`,
 `assign_task`, `delete_broadcast`, `list_sent`, `set_fleet_state`,
-`get_fleet_state`, `checkin` (coordinator); `check_request`, `sync_state`,
+`get_fleet_state`, `checkin` (coordinator); `poll_worker`, `check_request`, `sync_state`,
 `check_assignments`, `report_state`, `fleet_state`, `latest_directive`
 (worker); `send_message`,
 `check_messages`, `broadcast`\*, `check_broadcasts`\* (\*coordinator-only
