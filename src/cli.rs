@@ -17,7 +17,9 @@ fn parse_priority(s: &str) -> Result<i64, String> {
 
 const LONG_ABOUT: &str = "\
 Per-project TODO list backed by SQLite, designed for coding agents (Claude
-Code and friends). Plain CLI — no MCP, no daemon, no TTY.
+Code and friends). Plain CLI — no daemon, no TTY. An optional MCP server
+(mcp_server/ in the source repo and release archives) wraps this binary for
+agents that prefer tool calls.
 
 Output is compact-by-default to keep token use down for AI agents. Pass
 --verbose (on `show`, `export-todo --format markdown`) or --pretty (on
