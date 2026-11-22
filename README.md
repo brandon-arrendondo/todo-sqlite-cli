@@ -322,6 +322,16 @@ any `*mqtt*.json` config.
 
 Optional config fields, with their defaults:
 
+- `tls` (true): connect over TLS, verifying the broker's certificate and
+  hostname. There is no switch that turns verification off.
+- `ca_certs` (unset): path to a PEM CA bundle to verify the broker against,
+  for a broker whose certificate comes from a private CA. `~` is expanded.
+  Unset, the system trust store is used. A missing or unreadable file stops
+  the server at startup with an error naming the path; it never falls back
+  to the system trust store. Ignored, with a warning, when `tls` is false.
+  On macOS, Homebrew and python.org builds of Python don't read the system
+  keychain, so a CA you've added to the keychain isn't trusted there; point
+  `ca_certs` at the CA file instead.
 - `heartbeat_interval_s` (60): how often each node (coordinator and
   worker) republishes its retained presence.
 - `stale_after_heartbeats` (3): the link counts as stale after this many

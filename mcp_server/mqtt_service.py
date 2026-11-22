@@ -134,6 +134,9 @@ class Config:
     client_id: str
     topic_prefix: str
     tls: bool = True
+    # PEM CA bundle to verify the broker against instead of the system trust
+    # store (e.g. a private CA). Validated and `~`-expanded by load_config.
+    ca_certs: str | None = None
     username: str | None = None
     password_env: str | None = None
     db_path: str | None = None  # coordinator only
@@ -298,7 +301,31 @@ def load_config() -> Config | None:
             # A typo'd sign would otherwise switch e.g. the dead-man on and
             # have it act on its very first tick.
             raise RuntimeError(f"MQTT config {path}: '{key}' must be >= 0 (0 or null disables it), got {v!r}")
+    if raw.get("ca_certs") is not None:
+        raw["ca_certs"] = _check_ca_certs(path, raw["ca_certs"])
+        if not raw.get("tls", True):
+            _warn(f"'ca_certs' in {path} is ignored because 'tls' is false")
     return Config(**raw)
+
+
+def _check_ca_certs(config_path: str, value) -> str:
+    """Expand `~` in a configured CA bundle path and check it can be read.
+
+    A bad path fails here, naming it, rather than at connect time, and is
+    never replaced by the system trust store: a node configured for a
+    private CA that quietly fell back to system trust would fail every
+    TLS handshake with an error that doesn't mention the setting."""
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"MQTT config {config_path}: 'ca_certs' must be a path to a PEM CA bundle or null, got {value!r}")
+    ca_path = Path(value).expanduser()
+    try:
+        with open(ca_path, "rb"):
+            pass
+    except OSError as e:
+        raise RuntimeError(
+            f"MQTT config {config_path}: 'ca_certs' file {ca_path} is missing or unreadable ({e.strerror or e})"
+        ) from None
+    return str(ca_path)
 
 
 def _make_client(
@@ -331,7 +358,11 @@ def _make_client(
     if config.username:
         client.username_pw_set(config.username, config.password)
     if config.tls:
-        client.tls_set()
+        # Hostname verification stays on either way (paho's default).
+        if config.ca_certs:
+            client.tls_set(ca_certs=config.ca_certs)
+        else:
+            client.tls_set()
     if will_topic is not None:
         client.will_set(will_topic, will_payload, qos=1, retain=True)
     client.on_connect = on_connect
